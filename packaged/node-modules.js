@@ -20,7 +20,12 @@ import { deserialize } from '@xmcl/nbt';
 export { deserialize }
 
 import * as THREE from 'three';
-import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils'
+import * as BufferGeometryUtilsTemp from 'three/examples/jsm/utils/BufferGeometryUtils'
+let BufferGeometryUtils = BufferGeometryUtilsTemp;
+if(BufferGeometryUtilsTemp.BufferGeometryUtils != undefined){
+	BufferGeometryUtils = BufferGeometryUtilsTemp.BufferGeometryUtils
+}
+console.log(BufferGeometryUtils)
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls'
 export { THREE, OrbitControls, BufferGeometryUtils };
 

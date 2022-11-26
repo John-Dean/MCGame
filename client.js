@@ -24,8 +24,13 @@ const height = window.innerHeight;
 // const camera = new THREE.PerspectiveCamera(75, width / height, 0.1, 1000);
 const camera = new THREE.OrthographicCamera(width / -2, width / 2, height / 2, height / -2, 1, 1000);
 
+let canvas = document.createElement("canvas")
+let context = canvas.getContext('webgl2');
+console.log(context)
 const renderer = new THREE.WebGLRenderer({
-	antialias: true
+	antialias: true,
+	canvas: canvas,
+	context: context
 });
 console.log(renderer)
 renderer.shadowMap.enabled = true;
