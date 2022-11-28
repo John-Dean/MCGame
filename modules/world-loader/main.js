@@ -24,8 +24,8 @@ class WorldLoader	{
 	 *
 	 * @return  {Object}  The world level data
 	 */
-	async get_level_data(){
-		return await this.world.getLevelData();
+	get_level_data(){
+		return this.world.getLevelData();
 	}
 	
 	/**
@@ -36,18 +36,14 @@ class WorldLoader	{
 	 *
 	 * @return  {Object}     Information about the chunk
 	 */
-	async load_chunk_blocks(x, z){
-		let data;
-		try{
-			data = await this.world.getRegionData(x, z);
-		} catch(error){
-			data = {
+	load_chunk_blocks(x, z){
+		return this.world.getRegionData(x, z)
+		.catch(function(error){
+			return {
 				Sections: [],
 				Position: [x, z]
 			}
-		}
-		
-		return data
+		})
 	}
 
 	/**
@@ -58,18 +54,14 @@ class WorldLoader	{
 	 *
 	 * @return  {Object}     Information about the chunk
 	 */
-	async load_chunk_entities(x, z){
-		let data;
-		try{
-			data = await this.world.getEntityData(x, z);
-		} catch(error){
-			data = {
+	load_chunk_entities(x, z){
+		return this.world.getEntityData(x, z)
+		.catch(function(error){
+			return {
 				Entities: [],
 				Position: [x, z]
 			}
-		}
-		
-		return data
+		})
 	}
 }
 

@@ -1,6 +1,11 @@
-import {ModelCache} from "../model-cache/main.js";
+import { ModelCache } from "../model-cache/main.js";
 import { THREE } from "/packaged/node-modules.js"
-
+const cache_miss = function(item){
+	if(item.cache_hit === true){
+		return false;		
+	}
+	return true;
+}
 
 class ChunkToModels {
 	constructor(model_cache = new ModelCache()){
@@ -21,22 +26,30 @@ class ChunkToModels {
 			const options = model_data.Properties || {};
 			const is_item = options.is_item || false;
 			
-
-			let blockstate = await this.model_cache.get_blockstates(name, is_item);
-			let variant = await this.model_cache.pick_variant(blockstate, options);
+			let blockstate = this.model_cache.get_blockstates(name, is_item);
+			if(cache_miss(blockstate)){
+				blockstate = await blockstate;
+			}
+			
+			let variant = this.model_cache.pick_variant(blockstate, options);
 			if(variant.length == 0){
 				console.log(name, blockstate, variant, options);
 				continue;
 			}
-			let model = await this.model_cache.get_model(variant)
 			
-			let clean_model = new THREE.Mesh(model.geometry, model.material);
+			let model = this.model_cache.get_model(variant)
+			if(cache_miss(model)){
+				model = await model;
+			}
 			
-			clean_model.position.set(x, y, z);
+			// let clean_model = new THREE.Mesh(model.geometry, model.material);
 			
-			models.push(clean_model)
+			// clean_model.position.set(x, y, z);
+			
+			// clean_model.scale.set(1/16,1/16,1/16)
+			
+			// models.push(clean_model)
 		}
-		console.log(models)
 		
 		return models;
 	}

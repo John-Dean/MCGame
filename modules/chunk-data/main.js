@@ -10,7 +10,7 @@ class ModelInstance {
 		
 		if(data.Name == "minecraft:air"){
 			console.trace();
-			debugger;	
+			debugger;
 		}
 	}
 }
@@ -38,7 +38,7 @@ class ChunkData {
 			if(palette.length == 1 && palette[0] != undefined){
 				const block_data	=	palette[0];
 				if(block_data.Name == "minecraft:air"){
-					return;	
+					return;
 				}
 				for(let y = 0; y < 16; y++){
 					for(let z = 0; z < 16; z++){
@@ -149,8 +149,12 @@ class ChunkData {
 	
 	async get_chunk_data(x, z){
 		console.time();
-		let blocks = await this.world.load_chunk_blocks(x, z);
-		let entities = await this.world.load_chunk_entities(x, z);
+		
+		let blocks_promise = this.world.load_chunk_blocks(x, z);
+		let entities_promise = this.world.load_chunk_entities(x, z);
+		
+		let blocks = await blocks_promise;
+		let entities = await entities_promise;
 		
 		let chunk_data = [];
 		this.add_blocks(blocks, chunk_data);

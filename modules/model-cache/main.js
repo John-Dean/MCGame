@@ -2,9 +2,16 @@ import { VariantSelector } from "../blockstate-variant-selector/main.js";
 import { BlockLoader } from "../block-loader/main.js";
 import { ModelCleaner } from "../model-cleaner/main.js";
 
-/**
- * @borrows BlockLoader.add_resource_pack as add_resource_pack
- */
+const add_cache_hit_flag = function(object){
+	Object.defineProperty(object, 'cache_hit', {
+		value: true,
+		writable: false,
+		enumerable: false
+	});
+	
+	return object;
+}
+
 class ModelCache {
 	constructor(model_cache = {}, blockstate_cache = {}){
 		this.model_cache =	model_cache;
@@ -15,15 +22,15 @@ class ModelCache {
 		this.variant_selector = VariantSelector;
 	}
 	
-	add_resource_pack(name){
+	add_resource_pack(){
 		return this.block_loader.add_resource_pack(...arguments)
 	}
 	
-	async pick_variant(blockstates, options){
-		return this.variant_selector.pick_blockstate(blockstates, options);
+	pick_variant(){
+		return this.variant_selector.pick_blockstate(...arguments)
 	}
 	
-	async get_model(model_name, options){
+	get_model(model_name, options){
 		if(typeof model_name === "object"){
 			if(model_name instanceof Array){
 				return this.get_models(...arguments)
@@ -32,27 +39,32 @@ class ModelCache {
 			model_name = options.model;
 		}
 		
-		let cache = this.model_cache;
+		const cache = this.model_cache;
+		
+		const uv_lock = options.uvlock || false;
+		const x = options.x || 0;
+		const y = options.y || 0;
+		
 		if(cache[model_name] == undefined){
 			cache[model_name] = {};
 		}
-		let model_cache = cache[model_name];
-		
-		let uv_lock = options.uvlock || false;
-		let x = options.x || 0;
-		let y = options.y || 0;
-		
-		if(model_cache[uv_lock] == undefined){
-			model_cache[uv_lock] = {};
+		if(cache[model_name][uv_lock] == undefined){
+			cache[model_name][uv_lock] = {};
 		}
-		if(model_cache[uv_lock][x] == undefined){
-			model_cache[uv_lock][x] = {};
+		if(cache[model_name][uv_lock][x] == undefined){
+			cache[model_name][uv_lock][x] = {};
 		}
-		if(model_cache[uv_lock][x][y] == undefined){
-			model_cache[uv_lock][x][y] = this.get_model_no_cache(model_name, options);
+		if(cache[model_name][uv_lock][x][y] == undefined){
+			cache[model_name][uv_lock][x][y] = this.get_model_no_cache(model_name, options)
+			.then(
+				function(data){
+					cache[model_name][uv_lock][x][y] = add_cache_hit_flag(data);
+					return data;
+				}
+			)
 		}
 		
-		return await model_cache[uv_lock][x][y]
+		return cache[model_name][uv_lock][x][y]
 	}
 	
 	async get_model_no_cache(model_name, options){
@@ -68,19 +80,43 @@ class ModelCache {
 		return clean_model;
 	}
 	
-	async get_models(model_name_list, merge = true){
-		let models_promises = model_name_list.map(model => this.get_model(model));
-		let model_list = await Promise.all(models_promises)
-		
+	process_models(model_list, merge = true){
 		if(merge){
-			return this.model_cleaner.merge_models(model_list);
+			const merged_model = this.model_cleaner.merge_models(model_list);
+			return add_cache_hit_flag(merged_model);
 		}
-		return model_list
+		return add_cache_hit_flag(model_list);
 	}
 	
-	async get_blockstates(model_name, is_item = false){
-		let cache = this.blockstate_cache;
-		let data = cache[model_name];
+	get_models(model_name_list, merge = true){
+		const model_list = model_name_list.map(model => this.get_model(model));
+		
+		// Work out if we hit the cache on everything or not
+		let cache_miss = false;
+		for(let i = 0; i < model_list.length; i++){
+			const model = model_list[i];
+			if(model.cache_hit != true){
+				cache_miss = true;
+				break;
+			}
+		}
+		
+		if(cache_miss){
+			// If we didn't hit the cache, wait for everything to resolve and then process (returns promise)
+			return Promise.all(model_list)
+			.then(
+				model_list => {
+					return this.process_models(model_list, merge)
+				}
+			)
+		} else {
+			// If we did hit the cache, return then process directly
+			return this.process_models(model_list, merge)
+		}
+	}
+	
+	get_blockstates(model_name, is_item = false){
+		const cache = this.blockstate_cache;
 		if(cache[model_name] == undefined){
 			cache[model_name] = {};
 		}
@@ -89,15 +125,21 @@ class ModelCache {
 			return cache[model_name][is_item]
 		}
 		
-		cache[model_name][is_item] = this.get_blockstates_no_cache(...arguments);
+		cache[model_name][is_item] = this.get_blockstates_no_cache(...arguments)
+		.then(
+			function(data){
+				cache[model_name][is_item] = add_cache_hit_flag(data);
+				return data;
+			}
+		)
 		
-		return await cache[model_name][is_item];
+		return cache[model_name][is_item];
 	}
 	
 	async get_blockstates_no_cache(){
 		const block_loader = this.block_loader;
 		
-		return block_loader.get_blockstate_data(...arguments);
+		return block_loader.get_blockstate_data(...arguments)
 	}
 }
 

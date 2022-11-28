@@ -5,17 +5,29 @@ console.log("Okay")
 import { ModelCache } from "./modules/model-cache/main.js"
 
 import { ChunkData } from "./modules/chunk-data/main.js";
-import {ChunkToModels} from "./modules/chunk-to-models/main.js";
+import { ChunkToModels } from "./modules/chunk-to-models/main.js";
 
 let model_cache = new ModelCache();
 await model_cache.add_resource_pack("/assets/resource-pack/")
 
 let chunk_data = new ChunkData();
 await chunk_data.load_world("/assets/world.zip");
-let data = await chunk_data.get_chunk_data(1,1)
+console.time("chunk-file-load")
+let data = await chunk_data.get_chunk_data(1, 1)
+console.timeEnd("chunk-file-load")
 console.log(data)
 let chunk_to_models = new ChunkToModels(model_cache);
-let chunk_models = chunk_to_models.convert_to_model(data);
+console.time("chunk")
+let chunk_models = await chunk_to_models.convert_to_model(data);
+console.timeEnd("chunk")
+
+for(let i = 0; i < 10; i++){
+	console.time("chunk")
+	let chunk_models = await chunk_to_models.convert_to_model(data);
+	console.timeEnd("chunk")
+}
+
+
 
 const scene = new THREE.Scene();
 const width = window.innerWidth;
@@ -59,11 +71,16 @@ scene.add(ambient_light);
 
 let sc_variants = await model_cache.get_blockstates("block/stone_bricks");
 console.log(sc_variants)
-let variant = await model_cache.pick_variant(sc_variants, {facing: "south"});
+let variant = await model_cache.pick_variant(sc_variants, { facing: "south" });
 console.log(variant)
 let model = await model_cache.get_model(variant)
 console.log(model)
 scene.add(model)
+
+console.log(chunk_models)
+for(let i = 0; i < chunk_models.length; i++){
+	scene.add(chunk_models[i])
+}
 
 
 function animate(){
