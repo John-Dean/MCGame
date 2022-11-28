@@ -1,11 +1,6 @@
 import { ModelCache } from "../model-cache/main.js";
 import { THREE } from "/packaged/node-modules.js"
-const cache_miss = function(item){
-	if(item.cache_hit === true){
-		return false;		
-	}
-	return true;
-}
+
 
 class ChunkToModels {
 	constructor(model_cache = new ModelCache()){
@@ -27,7 +22,7 @@ class ChunkToModels {
 			const is_item = options.is_item || false;
 			
 			let blockstate = this.model_cache.get_blockstates(name, is_item);
-			if(cache_miss(blockstate)){
+			if(ModelCache.was_cache_miss(blockstate)){
 				blockstate = await blockstate;
 			}
 			
@@ -38,7 +33,7 @@ class ChunkToModels {
 			}
 			
 			let model = this.model_cache.get_model(variant)
-			if(cache_miss(model)){
+			if(ModelCache.was_cache_miss(model)){
 				model = await model;
 			}
 			

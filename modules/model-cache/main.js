@@ -12,6 +12,13 @@ const add_cache_hit_flag = function(object){
 	return object;
 }
 
+const was_cache_miss = function(object){
+	if(object.cache_hit === true){
+		return false;
+	}
+	return true;
+}
+
 class ModelCache {
 	constructor(model_cache = {}, blockstate_cache = {}){
 		this.model_cache =	model_cache;
@@ -19,8 +26,13 @@ class ModelCache {
 		this.block_loader = new BlockLoader();
 		this.model_cleaner = new ModelCleaner();
 		
+		this.materials_index = {}
+		this.materials = []
+		
 		this.variant_selector = VariantSelector;
 	}
+	
+	static was_cache_miss = was_cache_miss;
 	
 	add_resource_pack(){
 		return this.block_loader.add_resource_pack(...arguments)
@@ -28,6 +40,46 @@ class ModelCache {
 	
 	pick_variant(){
 		return this.variant_selector.pick_blockstate(...arguments)
+	}
+	
+	remap_model(model){
+		const global_materials_index = this.materials_index;
+		const global_materials = this.materials;
+		
+		let materials = model.material;
+		if(!(materials instanceof Array)){
+			materials = [materials];
+		}
+		
+		//Add all the materials to the global list, and calculate the mappings
+		const mapping = new Array(materials.length);
+		for(let i=0;i<materials.length;i++){
+			const material = materials[i];
+			const uuid = material.uuid;
+			let material_index = global_materials_index[uuid];
+			
+			if(material_index == undefined){
+				material_index = global_materials.length;
+				global_materials_index[uuid] = material_index;
+				global_materials[material_index] = material;
+			}
+			
+			mapping[i] = material_index;
+		}
+		
+		//Remap the groups to the new materials
+		const geometry = model.geometry;
+		const groups = geometry.groups;
+		
+		for(let i=0;i<groups.length;i++){
+			const group = groups[i];
+			group.materialIndex = mapping[group.materialIndex]
+		}
+		
+		//Swap the materials list to the global list
+		model.material = global_materials;
+		
+		return model;
 	}
 	
 	get_model(model_name, options){
@@ -71,13 +123,19 @@ class ModelCache {
 		const block_loader = this.block_loader;
 		const model_cleaner = this.model_cleaner;
 		
-		let model_data = await block_loader.get_model_data(model_name);
+		const model_data = await block_loader.get_model_data(model_name);
 		
-		let model = await block_loader.get_model(model_data, options);
+		const model = await block_loader.get_model(model_data, options);
 		
-		let clean_model = await model_cleaner.clean_model(model)
+		const clean_model = await model_cleaner.clean_model(model);
 		
-		return clean_model;
+		clean_model.name = model_name;
+		options.model = model_name;
+		clean_model.userData = options;
+		
+		const remapped_model = await this.remap_model(clean_model);
+		
+		return remapped_model;
 	}
 	
 	process_models(model_list, merge = true){
