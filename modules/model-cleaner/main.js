@@ -44,28 +44,34 @@ class ModelCleaner {
 			sorted[uuid].push(group);
 		}
 		
-		const output_buffer_geometries = [];
-		const output_materials = [];
+		let materials = [];
+		let geometries = []
+		let material_index = [];
 		
 		// Merge geometries
 		for(const uuid in sorted){
 			const groups = sorted[uuid];
 			const material = groups[0].material;
+			const index = materials.length;
+			materials.push(material);
 			
 			const buffer_geometries = groups.map(group => group.geometry)
-			
-			const buffer_geometry = this.merge_buffer_geometries(buffer_geometries, false);
-			output_buffer_geometries.push(buffer_geometry)
-			output_materials.push(material);
+			for(let i=0;i<buffer_geometries.length;i++){
+				geometries.push(buffer_geometries[i]);
+				material_index.push(index);	
+			}
 		}
 		
-		if(output_buffer_geometries.length ==0){
+		if(geometries.length ==0){
 			return new THREE.Mesh()
 		}
 		
-		const output_geometry = this.merge_buffer_geometries(output_buffer_geometries, true);
+		const output_geometry = this.merge_buffer_geometries(geometries, true);
+		for(let i=0;i<output_geometry.groups.length;i++){
+			output_geometry.groups[i].materialIndex = material_index[i];
+		}
 		
-		const output_mesh = new THREE.Mesh(output_geometry, output_materials)
+		const output_mesh = new THREE.Mesh(output_geometry, materials)
 		
 		if(round_value != undefined){
 			this.clean_geometry(output_geometry, round_value)
