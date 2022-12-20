@@ -11,9 +11,9 @@ let model_cache = new ModelCache();
 await model_cache.add_resource_pack("/assets/resource-pack/")
 
 let chunk_data = new ChunkData();
-await chunk_data.load_world("/assets/world.zip");
+await chunk_data.load_world("/assets/Sample World/");
 console.time("chunk-file-load")
-let data = await chunk_data.get_chunk_data(1, 1)
+let data = await chunk_data.get_chunk_data(0, 0)
 console.timeEnd("chunk-file-load")
 console.log(data)
 let chunk_to_models = new ChunkToModels(model_cache);
@@ -38,13 +38,11 @@ const camera = new THREE.OrthographicCamera(width / -2, width / 2, height / 2, h
 
 let canvas = document.createElement("canvas")
 let context = canvas.getContext('webgl2');
-console.log(context)
 const renderer = new THREE.WebGLRenderer({
 	antialias: true,
 	canvas: canvas,
 	context: context
 });
-console.log(renderer)
 renderer.shadowMap.enabled = true;
 
 renderer.setSize(window.innerWidth, window.innerHeight);
@@ -69,16 +67,26 @@ const ambient_light = new THREE.AmbientLight(0x404040, 4); // soft white light
 scene.add(ambient_light);
 
 
-let sc_variants = await model_cache.get_blockstates("block/stone_bricks");
+let sc_variants = await model_cache.get_blockstates("block/oak_stairs");
 console.log(sc_variants)
-let variant = await model_cache.pick_variant(sc_variants, { facing: "south" });
+let variant = await model_cache.pick_variant(sc_variants, { facing: "east", in_wall: false, open: false, half: "bottom", shape: "straight"});
 console.log(variant)
 let model = await model_cache.get_model(variant)
 console.log(model)
+
+
+// const wireframe = new THREE.MeshBasicMaterial({
+// 	color: 0xff0000,
+// 	wireframe: true
+// });
+
+
+
 scene.add(model)
 
 console.log(chunk_models)
 for(let i = 0; i < chunk_models.length; i++){
+	// console.log(chunk_models[i])
 	scene.add(chunk_models[i])
 }
 

@@ -81,7 +81,7 @@ class ChunkData {
 	}
 	
 	add_blocks(blocks, output){
-		const sections = blocks.sections
+		const sections = blocks.sections || []
 		for(let i = 0; i < sections.length; i++){
 			const section = sections[i];
 			this.add_section(section, output);

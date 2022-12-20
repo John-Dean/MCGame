@@ -1,6 +1,7 @@
 import { VariantSelector } from "../blockstate-variant-selector/main.js";
 import { BlockLoader } from "../block-loader/main.js";
 import { ModelCleaner } from "../model-cleaner/main.js";
+import { THREE } from "/packaged/node-modules.js";
 
 const add_cache_hit_flag = function(object){
 	Object.defineProperty(object, 'cache_hit', {
@@ -51,9 +52,9 @@ class ModelCache {
 			materials = [materials];
 		}
 		
-		//Add all the materials to the global list, and calculate the mappings
+		// Add all the materials to the global list, and calculate the mappings
 		const mapping = new Array(materials.length);
-		for(let i=0;i<materials.length;i++){
+		for(let i = 0; i < materials.length; i++){
 			const material = materials[i];
 			const uuid = material.uuid;
 			let material_index = global_materials_index[uuid];
@@ -67,16 +68,16 @@ class ModelCache {
 			mapping[i] = material_index;
 		}
 		
-		//Remap the groups to the new materials
+		// Remap the groups to the new materials
 		const geometry = model.geometry;
 		const groups = geometry.groups;
 		
-		for(let i=0;i<groups.length;i++){
+		for(let i = 0; i < groups.length; i++){
 			const group = groups[i];
 			group.materialIndex = mapping[group.materialIndex]
 		}
 		
-		//Swap the materials list to the global list
+		// Swap the materials list to the global list
 		model.material = global_materials;
 		
 		return model;
@@ -119,23 +120,406 @@ class ModelCache {
 		return cache[model_name][uv_lock][x][y]
 	}
 	
+	identify_points_sides(model){
+		const geometry = model.geometry;
+		const positions = geometry.getAttribute('position').array;
+		
+		const position_info = [];
+		
+		for(let i = 0; i < positions.length; i += 3){
+			const output = {
+				x_low: false,
+				x_equal_low: false,
+				x_high: false,
+				x_equal_high: false,
+				y_low: false,
+				y_equal_low: false,
+				y_high: false,
+				y_equal_high: false,
+				z_low: false,
+				z_equal_low: false,
+				z_high: false,
+				z_equal_high: false
+			};
+			
+			const x = positions[i + 0];
+			const y = positions[i + 1];
+			const z = positions[i + 2];
+			
+			if(x <= -8){
+				output.x_low = true
+			}
+			if(x == -8){
+				output.x_equal_low = true
+			}
+			if(y <= -8){
+				output.y_low = true
+			}
+			if(y == -8){
+				output.y_equal_low = true
+			}
+			if(z <= -8){
+				output.z_low = true
+			}
+			if(z == -8){
+				output.z_equal_low = true
+			}
+			if(x >= 8){
+				output.x_high = true
+			}
+			if(x == 8){
+				output.x_equal_high = true
+			}
+			if(y >= 8){
+				output.y_high = true
+			}
+			if(y == 8){
+				output.y_equal_high = true
+			}
+			if(z >= 8){
+				output.z_high = true
+			}
+			if(z == 8){
+				output.z_equal_high = true
+			}
+			
+			position_info.push(output);
+		}
+		
+		geometry.userData.position_info = position_info;
+	}
+	
+	identify_group_sides(model){
+		const geometry = model.geometry;
+		const materials = model.material;
+		const groups = geometry.groups;
+		geometry.userData.groups = [];
+		
+		let is_indexed = false;
+		if(geometry.index != null){
+			is_indexed = true;
+		}
+		
+		let index_map;
+		if(is_indexed){
+			index_map = geometry.index.array;
+		}
+		let position_map = geometry.userData.position_info;
+		if(position_map == undefined){
+			this.identify_points_sides(...arguments);
+			return this.identify_group_sides(...arguments);
+		}
+		
+		for(let g = 0; g < groups.length; g++){
+			const group = groups[g];
+			const number_of_positions_in_group = group.count;
+			const material_index = group.materialIndex;
+			const material = materials[material_index];
+			
+			const start_value = group.start;
+			const count = {}
+			
+			for(let i = 0; i < number_of_positions_in_group; i++){
+				let index = i + start_value;
+				if(is_indexed){
+					index = index_map[index]
+				}
+				
+				const position_info = position_map[index];
+				
+				for(let key in position_info){
+					if(count[key] == undefined){
+						count[key] = 0;
+					}
+					
+					const value = position_info[key];
+					if(value){
+						count[key]++;
+					}
+				}
+			}
+			
+			group.sides = {};
+			
+			for(let key in count){
+				group.sides[key] = false;
+				if(count[key] == number_of_positions_in_group){
+					group.sides[key] = true;
+				}
+			}
+			
+			group.area = this.calculate_area_of_group(geometry, g)
+			group.transparency = material.transparent;
+			group.material_uuid = material.uuid;
+			
+			geometry.userData.groups[g] = group;
+		}
+	}
+	
+	calculate_area_of_group(geometry, group = undefined){
+		let is_indexed = false;
+		if(geometry.index != null){
+			is_indexed = true;
+		}
+		
+		let index_map = [];
+		if(is_indexed){
+			index_map = geometry.index.array;
+		}
+		
+		const vector1 = new THREE.Vector3()
+		const vector2 = new THREE.Vector3()
+		const vector3 = new THREE.Vector3()
+		const triangle = new THREE.Triangle(vector1, vector2, vector3);
+		
+		const positions = geometry.getAttribute('position').array;
+		
+		const groups = geometry.groups;
+		let start = 0;
+		let finish = positions.length;
+		
+		if(group != undefined){
+			start = groups[group].start * 3;
+			finish = start + (groups[group].count * 3);
+		}
+		
+		let area = 0;
+		for(let i = start; i < finish; i += 9){
+			let i3x1 = i + 0;
+			let i3y1 = i + 1;
+			let i3z1 = i + 2;
+			let i3x2 = i + 3;
+			let i3y2 = i + 4;
+			let i3z2 = i + 5;
+			let i3x3 = i + 6;
+			let i3y3 = i + 7;
+			let i3z3 = i + 8;
+			
+			if(is_indexed){
+				i3x1 = index_map[i3x1];
+				i3y1 = index_map[i3y1];
+				i3z1 = index_map[i3z1];
+				i3x2 = index_map[i3x2];
+				i3y2 = index_map[i3y2];
+				i3z2 = index_map[i3z2];
+				i3x3 = index_map[i3x3];
+				i3y3 = index_map[i3y3];
+				i3z3 = index_map[i3z3];
+			}
+			
+			const x1 = positions[i3x1]
+			const y1 = positions[i3y1]
+			const z1 = positions[i3z1]
+			
+			const x2 = positions[i3x2]
+			const y2 = positions[i3y2]
+			const z2 = positions[i3z2]
+			
+			const x3 = positions[i3x3]
+			const y3 = positions[i3y3]
+			const z3 = positions[i3z3]
+			
+			vector1.x = x1;
+			vector1.y = y1;
+			vector1.z = z1;
+			
+			vector2.x = x2;
+			vector2.y = y2;
+			vector2.z = z2;
+			
+			vector3.x = x3;
+			vector3.y = y3;
+			vector3.z = z3;
+			
+			const triangle_area = triangle.getArea();
+			area += triangle_area;
+		}
+		
+		return area
+	}
+	
+	find_transparent_textures(materials){
+		let promises = [];
+		for(let i = 0; i < materials.length; i++){
+			const material = materials[i];
+			
+			if(material.userData.transparency_checked == true){
+				continue;
+			}
+			if(material.userData.transparency_promise == undefined){
+				material.userData.transparency_promise = new Promise(
+					async function(resolve, reject){
+						if(material.map == null){
+							return resolve(true)
+						}
+						const source = material.map.source;
+					
+						if(source.has_texture != true){
+							return resolve(true);
+						}
+					
+						if(source.has_loaded == false){
+							await source.load_promise;
+						}
+					
+						let image = source.data;
+						let bitmap = await createImageBitmap(image)
+					
+						let canvas;
+						try{
+							canvas = document.createElement("canvas");
+						} catch(error){
+							try{
+								canvas = new OffscreenCanvas(1, 1);
+							} catch(error){
+								throw "Unable to create canvas"
+							}
+						}
+					
+						let context = canvas.getContext("2d");
+						canvas.width = bitmap.width;
+						canvas.height = bitmap.height;
+						context.clearRect(0, 0, canvas.width, canvas.height);
+						context.drawImage(bitmap, 0, 0);
+					
+						let image_data = context.getImageData(0, 0, bitmap.width, bitmap.height);
+					
+						let transparency = false;
+						for(let i = 0; i < image_data.data.length; i += 4){
+							let r = image_data.data[i + 0];
+							let g = image_data.data[i + 1];
+							let b = image_data.data[i + 2];
+							let a = image_data.data[i + 3];
+						
+							if(a < 255){
+								transparency = true;
+								break;
+							}
+						}
+						
+						resolve(transparency)
+					}
+				).then(
+					function(transparency){
+						material.userData.transparency_checked = true;
+						material.transparent = transparency;
+						return transparency;
+					}
+				)
+			}
+			
+			promises.push(material.userData.transparency_promise)
+		}
+		
+		return Promise.all(promises);
+	}
+	
+	is_solid_sides(model){
+		const geometry = model.geometry;
+				
+		let side_names = [
+			"x_equal_low",
+			"x_equal_high",
+			"y_equal_low",
+			"y_equal_high",
+			"z_equal_low",
+			"z_equal_high"
+		];
+		let sides = {
+			opaque: {},
+			transparent: {}
+		};
+		for(let s = 0; s < side_names.length; s++){
+			const name = side_names[s];
+			sides.opaque[name] = 0
+			sides.transparent[name] = 0
+		}
+		
+		const groups = geometry.groups;
+		let transparent_materials = {};
+		for(let i = 0; i < groups.length; i++){
+			const group = groups[i];
+			const group_transparent = group.transparency;
+			const material_index = group.materialIndex;
+			const uuid = model.material[material_index].uuid;
+			
+			let prefix = "opaque";
+			if(group_transparent){
+				prefix = "transparent";
+			}
+			
+			for(let s = 0; s < side_names.length; s++){
+				const name = side_names[s];
+				if(group.sides[name] == true){
+					sides[prefix][name] += group.area;
+					
+					if(group_transparent){
+						if(transparent_materials[name] == undefined){
+							transparent_materials[name] = []
+						}
+						transparent_materials[name].push(uuid)
+					}
+				}
+			}
+		}
+		
+		let is_all_solid = true;
+		geometry.userData.sides = { opaque: {}, transparent: {} }
+		for(let s = 0; s < side_names.length; s++){
+			const name = side_names[s];
+			
+			{
+				let value = false;
+				if(sides.opaque[name] >= (16 * 16)){
+					value = true;
+				}
+			
+				if(!value){
+					is_all_solid = false;
+				}
+			
+				geometry.userData.sides.opaque[name] = value;
+			}
+			{
+				let value = false;
+				if(sides.transparent[name] >= (16 * 16)){
+					value = true;
+				}
+			
+				geometry.userData.sides.transparent[name] = value;
+			}
+		}
+		geometry.userData.sides.transparent_materials = transparent_materials;
+		geometry.userData.is_full_block = is_all_solid;
+	}
+	
 	async get_model_no_cache(model_name, options){
 		const block_loader = this.block_loader;
 		const model_cleaner = this.model_cleaner;
 		
-		const model_data = await block_loader.get_model_data(model_name);
+		try{
+			const model_data = await block_loader.get_model_data(model_name);
 		
-		const model = await block_loader.get_model(model_data, options);
+			const model = await block_loader.get_model(model_data, options);
 		
-		const clean_model = await model_cleaner.clean_model(model);
+			const clean_model = await model_cleaner.clean_model(model);
 		
-		clean_model.name = model_name;
-		options.model = model_name;
-		clean_model.userData = options;
+			await this.find_transparent_textures(clean_model.material);
+			
+			this.identify_group_sides(clean_model);
 		
-		const remapped_model = await this.remap_model(clean_model);
+			this.is_solid_sides(clean_model);
 		
-		return remapped_model;
+			clean_model.name = model_name;
+			options.model = model_name;
+			clean_model.userData = options;
+		
+			const remapped_model = await this.remap_model(clean_model);
+		
+			return remapped_model;
+		} catch(error){
+			return new THREE.Mesh();
+		}
 	}
 	
 	process_models(model_list, merge = true){

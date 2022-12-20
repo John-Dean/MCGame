@@ -42,7 +42,7 @@ class VariantSelector {
 		let matches_value = false;
 		for(let v = 0; v < values.length; v++){
 			let value = values[v];
-			if(value == options[key]){
+			if(String(value) == String(options[key])){
 				matches_value = true;
 			}
 		}
@@ -159,7 +159,6 @@ class VariantSelector {
 		if(properties.is_item){
 			return this.parse_item(...arguments);	
 		}
-		
 		let model = [];
 		if(blockstate.variants != undefined){
 			model	=	this.parse_variants(blockstate, properties);

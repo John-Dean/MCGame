@@ -30,6 +30,11 @@ class URLFileSystem extends FileSystem {
 		this.sep = "/";
 		this.type = "url";
 		this.writeable = false;
+		
+		if(root.endsWith("/")){
+			root = root.substring(0,root.length - 1);
+		}
+		
 		this.root = root;
 		this.known_files = {};
 	}
