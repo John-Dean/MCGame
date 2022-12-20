@@ -166,6 +166,21 @@
 					"return": {
 						"after": true
 					},
+					"const": {
+						"after": true
+					},
+					"let": {
+						"after": true
+					},
+					"of": {
+						"after": true
+					},
+					"var": {
+						"after": true
+					},
+					"in": {
+						"after": true
+					},
 					"as": {
 						"before": true,
 						"after": true
