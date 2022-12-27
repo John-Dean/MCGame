@@ -96,7 +96,7 @@ class ChunkToModels {
 					let geometries = z_data[x];
 					
 					if(geometries.length == 1){
-						z_data[x] = geometries[0].userData.parent.sides;
+						z_data[x] = geometries[0].userData.sides;
 						continue;
 					}
 					
@@ -122,7 +122,7 @@ class ChunkToModels {
 					
 					for(let i = 0; i < geometries.length; i++){
 						const geometry = geometries[i];
-						let sides = geometry.userData.parent.sides;
+						let sides = geometry.userData.sides;
 						if(sides == undefined){
 							continue
 						}
@@ -367,13 +367,8 @@ class ChunkToModels {
 				model = await model;
 			}
 			
-			const geometry = model.geometry.clone();
-			
-			// geometry.scale(1 / 16, 1 / 16, 1 / 16);
-			geometry.translate(x, y, z)
-			
-			const parent_data = geometry.userData;
-			geometry.userData = { x: x, y: y, z: z, parent: parent_data }
+			const geometry = model.geometry;
+			const geometry_data = geometry.userData;
 			
 			if(output_grid[y] == undefined){
 				output_grid[y] = []
@@ -386,7 +381,7 @@ class ChunkToModels {
 			}
 			output_grid[y][z][x].push(geometry)
 			
-			if(parent_data.is_full_block == true){
+			if(geometry_data.is_full_block == true){
 				output_grid[y][z][x].is_full_block = true;
 			}
 			
@@ -424,7 +419,21 @@ class ChunkToModels {
 						}
 					
 						if(count < 6){
-							geometries.push(...stored_geometries);
+							const cloned_geometries = stored_geometries.map(parent_geometry => {
+								const geometry = parent_geometry.clone();
+								const position_x = Number(x)
+								const position_y = Number(y)
+								const position_z = Number(z)
+								
+								geometry.translate(position_x, position_y, position_z)
+			
+								const parent_data = parent_geometry.userData;
+								geometry.userData = { x: position_x, y: position_y, z: position_z, parent: parent_data }
+								
+								return geometry;
+							});
+							
+							geometries.push(...cloned_geometries);
 						}
 					}
 				}

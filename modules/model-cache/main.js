@@ -717,7 +717,7 @@ class ModelCache {
 			
 			return remapped_model;
 		} catch(error){
-			console.error(error)
+			console.error("Error encountered on:",model_name,options,error)
 			return new THREE.Mesh();
 		}
 	}
