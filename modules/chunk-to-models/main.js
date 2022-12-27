@@ -369,7 +369,7 @@ class ChunkToModels {
 			
 			const geometry = model.geometry.clone();
 			
-			geometry.scale(1 / 16, 1 / 16, 1 / 16);
+			// geometry.scale(1 / 16, 1 / 16, 1 / 16);
 			geometry.translate(x, y, z)
 			
 			const parent_data = geometry.userData;

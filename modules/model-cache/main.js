@@ -594,16 +594,16 @@ class ModelCache {
 			count++;
 		}
 		if(y_gap_a == y_gap_b){
-			output.y = y_gap_a;	
+			output.y = y_gap_a;
 			count++;
 		}
 		if(z_gap_a == z_gap_b){
-			output.z = z_gap_a;	
+			output.z = z_gap_a;
 			count++;
 		}
 		
 		if(count == 3){
-			output.valid = true;	
+			output.valid = true;
 		}
 		
 		return output;
@@ -620,7 +620,7 @@ class ModelCache {
 			is_indexed = true;
 		}
 		
-		let index_map = undefined;
+		let index_map;
 		if(is_indexed){
 			index_map = geometry.index.array;
 		}
@@ -647,18 +647,18 @@ class ModelCache {
 				let point = this.get_point(positions, normals, uvs, start, i, index_map);
 				if(point.uv.u == 0){
 					if(point.uv.v == 0){
-						top_left = point;	
+						top_left = point;
 					}
 					if(point.uv.v == 1){
-						top_right = point;	
+						top_right = point;
 					}
 				}
 				if(point.uv.u == 1){
 					if(point.uv.v == 0){
-						bottom_left = point;	
+						bottom_left = point;
 					}
 					if(point.uv.v == 1){
-						bottom_right = point;	
+						bottom_right = point;
 					}
 				}
 			}
@@ -667,7 +667,7 @@ class ModelCache {
 				continue;
 			}
 			
-			//Check to see if the vectors between the points are the same
+			// Check to see if the vectors between the points are the same
 			let top_vs_bottom = this.compare_vectors(top_left, top_right, bottom_left, bottom_right)
 			let left_vs_right = this.compare_vectors(top_left, bottom_left, top_right, bottom_right)
 			
@@ -677,11 +677,10 @@ class ModelCache {
 			
 			
 			
-			
 			group.points = {
-				top_left : top_left.index, 
-				top_right : top_right.index, 
-				bottom_left: bottom_left.index, 
+				top_left: top_left.index,
+				top_right: top_right.index,
+				bottom_left: bottom_left.index,
 				bottom_right: bottom_right.index
 			}
 			group.is_rectangle = true;
@@ -698,21 +697,24 @@ class ModelCache {
 			const model = await block_loader.get_model(model_data, options);
 		
 			const clean_model = await model_cleaner.clean_model(model);
-		
+			
 			await this.find_transparent_textures(clean_model.material);
 			
 			this.identify_group_sides(clean_model);
 		
 			this.is_solid_sides(clean_model);
 			
+			const geometry = clean_model.geometry;
+			geometry.scale(1 / 16, 1 / 16, 1 / 16);
+			
 			this.is_rectangle_groups(clean_model);
-		
+			
 			clean_model.name = model_name;
 			options.model = model_name;
 			clean_model.userData = options;
-		
+			
 			const remapped_model = await this.remap_model(clean_model);
-		
+			
 			return remapped_model;
 		} catch(error){
 			console.error(error)
