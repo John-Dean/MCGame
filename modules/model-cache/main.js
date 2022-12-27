@@ -1,7 +1,7 @@
 import { VariantSelector } from "../blockstate-variant-selector/main.js";
 import { BlockLoader } from "../block-loader/main.js";
 import { ModelCleaner } from "../model-cleaner/main.js";
-import { THREE } from "/packaged/node-modules.js";
+import { THREE } from "/packaged/node-modules.js"
 
 const add_cache_hit_flag = function(object){
 	Object.defineProperty(object, 'cache_hit', {
@@ -19,6 +19,49 @@ const was_cache_miss = function(object){
 	}
 	return true;
 }
+
+class ExtendedArray extends Float32Array {
+	get x(){
+		return this[0]
+	}
+	
+	set x(value){
+		this[0] = value;
+	}
+
+	get y(){
+		return this[1]
+	}
+
+	set y(value){
+		this[1] = value;
+	}
+
+	get z(){
+		return this[2]
+	}
+
+	set z(value){
+		this[2] = value;
+	}
+
+	get u(){
+		return this[0]
+	}
+
+	set u(value){
+		this[0] = value;
+	}
+
+	get v(){
+		return this[1]
+	}
+
+	set v(value){
+		this[1] = value;
+	}
+}
+
 
 class ModelCache {
 	constructor(model_cache = {}, blockstate_cache = {}){
@@ -493,6 +536,158 @@ class ModelCache {
 		geometry.userData.is_full_block = is_all_solid;
 	}
 	
+	
+	get_point	=	function(positions, normals, uvs, start, i, index_map = undefined){
+		let index = start + i;
+				
+		if(index_map != undefined){
+			index = index_map[index]
+		}
+		let i3 = index * 3;
+		let i2 = index * 2;
+				
+		let position = new ExtendedArray(3);
+		let normal = new ExtendedArray(3);
+		let uv = new ExtendedArray(2);
+				
+		position.x = positions[i3 + 0]
+		position.y = positions[i3 + 1]
+		position.z = positions[i3 + 2]
+
+		normal.x = normals[i3 + 0]
+		normal.y = normals[i3 + 1]
+		normal.z = normals[i3 + 2]
+				
+		uv.u = uvs[i2 + 0]
+		uv.v = uvs[i2 + 1]
+				
+				
+		return {
+			position: position,
+			uv: uv,
+			normal: normal,
+			index: i
+		}
+	}
+	
+	compare_vectors(position_a1, position_a2, position_b1, position_b2){
+		let	x_gap_a = position_a2.position.x - position_a1.position.x;
+		let	y_gap_a = position_a2.position.y - position_a1.position.y;
+		let	z_gap_a = position_a2.position.z - position_a1.position.z;
+		
+		
+		let	x_gap_b = position_b2.position.x - position_b1.position.x;
+		let	y_gap_b = position_b2.position.y - position_b1.position.y;
+		let	z_gap_b = position_b2.position.z - position_b1.position.z;
+		
+		let output = {
+			x: undefined,
+			y: undefined,
+			z: undefined,
+			valid: false
+		}
+		
+		let count = 0;
+		
+		if(x_gap_a == x_gap_b){
+			output.x = x_gap_a;
+			count++;
+		}
+		if(y_gap_a == y_gap_b){
+			output.y = y_gap_a;	
+			count++;
+		}
+		if(z_gap_a == z_gap_b){
+			output.z = z_gap_a;	
+			count++;
+		}
+		
+		if(count == 3){
+			output.valid = true;	
+		}
+		
+		return output;
+	}
+	
+	is_rectangle_groups(model){
+		const geometry = model.geometry;
+		const positions = geometry.getAttribute('position').array;
+		const normals = geometry.getAttribute('normal').array;
+		const uvs = geometry.getAttribute('uv').array;
+		
+		let is_indexed = false;
+		if(geometry.index != null){
+			is_indexed = true;
+		}
+		
+		let index_map = undefined;
+		if(is_indexed){
+			index_map = geometry.index.array;
+		}
+		
+		const groups = geometry.groups;
+		for(let g = 0; g < groups.length; g++){
+			const group = groups[g];
+			group.is_rectangle = false;
+			
+			const count = group.count;
+			const start = group.start;
+			
+			
+			if(count != 6){
+				continue;
+			}
+			
+			let top_left;
+			let top_right;
+			let bottom_left;
+			let bottom_right;
+			
+			for(let i = 0; i < count; i++){
+				let point = this.get_point(positions, normals, uvs, start, i, index_map);
+				if(point.uv.u == 0){
+					if(point.uv.v == 0){
+						top_left = point;	
+					}
+					if(point.uv.v == 1){
+						top_right = point;	
+					}
+				}
+				if(point.uv.u == 1){
+					if(point.uv.v == 0){
+						bottom_left = point;	
+					}
+					if(point.uv.v == 1){
+						bottom_right = point;	
+					}
+				}
+			}
+			
+			if(top_left == undefined || top_right == undefined || bottom_left == undefined || bottom_right == undefined){
+				continue;
+			}
+			
+			//Check to see if the vectors between the points are the same
+			let top_vs_bottom = this.compare_vectors(top_left, top_right, bottom_left, bottom_right)
+			let left_vs_right = this.compare_vectors(top_left, bottom_left, top_right, bottom_right)
+			
+			if(top_vs_bottom.valid != true || left_vs_right.valid != true){
+				continue;
+			}
+			
+			
+			
+			
+			group.points = {
+				top_left : top_left.index, 
+				top_right : top_right.index, 
+				bottom_left: bottom_left.index, 
+				bottom_right: bottom_right.index
+			}
+			group.is_rectangle = true;
+		}
+	}
+	
 	async get_model_no_cache(model_name, options){
 		const block_loader = this.block_loader;
 		const model_cleaner = this.model_cleaner;
@@ -509,6 +704,8 @@ class ModelCache {
 			this.identify_group_sides(clean_model);
 		
 			this.is_solid_sides(clean_model);
+			
+			this.is_rectangle_groups(clean_model);
 		
 			clean_model.name = model_name;
 			options.model = model_name;
@@ -518,6 +715,7 @@ class ModelCache {
 		
 			return remapped_model;
 		} catch(error){
+			console.error(error)
 			return new THREE.Mesh();
 		}
 	}

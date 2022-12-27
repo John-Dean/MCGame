@@ -17,6 +17,17 @@ const node_to_csg = function(node){
 	return CSG.fromPolygons(node.allPolygons());
 }
 
+class GridArray extends Array {
+	constructor(){
+		super();
+		Object.defineProperty(this, 'is_full_block', {
+			value: false,
+			writable: true,
+			enumerable: false
+		});
+	}
+}
+
 class ChunkToModels {
 	constructor(model_cache = new ModelCache()){
 		this.model_cache = model_cache;
@@ -161,7 +172,7 @@ class ChunkToModels {
 			throw "No geometries provided"
 		}
 		
-		const side_info = this.side_info; 
+		const side_info = this.side_info;
 		
 		let valid_geometries_transparent = [];
 		let valid_material_indexes_transparent = [];
@@ -184,9 +195,9 @@ class ChunkToModels {
 					const info = side_info[side];
 					
 					if(sides[type][side] == true){
-						let sample_x = x + info.offset_x;
-						let sample_y = y + info.offset_y;
-						let sample_z = z + info.offset_z;
+						let sample_x = Number(x) + Number(info.offset_x);
+						let sample_y = Number(y) + Number(info.offset_y);
+						let sample_z = Number(z) + Number(info.offset_z);
 						
 						let neighbour_info = this.find_in_grid(sample_x, sample_y, sample_z, grid);
 						let type_info = neighbour_info[type] || {};
@@ -230,10 +241,10 @@ class ChunkToModels {
 					const prefix = prefixes[p];
 					for(let i = 0; i < removed_sides[prefix].length; i++){
 						const base_side = removed_sides[prefix][i];
-						//This will handle any groups that exceed the block bounds
+						// This will handle any groups that exceed the block bounds
 						const side = side_info[base_side].broad;
 						if(group_data.sides[side] == true){
-							//Transparent faces should get culled if next to opaque faces, or same material transparent faces
+							// Transparent faces should get culled if next to opaque faces, or same material transparent faces
 							if(transparent && prefix == "transparent"){
 								let transparent_materials = transparent_material_record[base_side];
 								let material = group_data.material_uuid;
@@ -248,7 +259,7 @@ class ChunkToModels {
 					}
 					
 					if(!is_valid){
-						break;	
+						break;
 					}
 				}
 				if(is_valid){
@@ -318,7 +329,7 @@ class ChunkToModels {
 		return meshes
 	}
 	
-	async get_geometries_and_materials(chunk_data){
+	async get_geometries_and_materials(chunk_data, should_presort_geometry = true){
 		const materials = this.model_cache.materials;
 		const wireframe = new THREE.MeshBasicMaterial({
 			color: 0xff0000,
@@ -371,13 +382,54 @@ class ChunkToModels {
 				output_grid[y][z] = []
 			}
 			if(output_grid[y][z][x] == undefined){
-				output_grid[y][z][x] = []
+				output_grid[y][z][x] = new GridArray();
 			}
 			output_grid[y][z][x].push(geometry)
 			
-			geometries.push(geometry);
+			if(parent_data.is_full_block == true){
+				output_grid[y][z][x].is_full_block = true;
+			}
+			
+			if(!should_presort_geometry){
+				geometries.push(geometry);
+			}
 		}
 		
+		if(should_presort_geometry){
+			const side_info = this.side_info;
+			for(let y in output_grid){
+				const y_data = output_grid[y];
+				for(let z in y_data){
+					const z_data = y_data[z];
+					for(let x in z_data){
+						const stored_geometries = z_data[x];
+						const is_full_block = stored_geometries.is_full_block;
+						let count = 0;
+					
+						if(is_full_block){
+							for(let side in side_info){
+								const info = side_info[side];
+								const sample_x = Number(x) + Number(info.offset_x);
+								const sample_y = Number(y) + Number(info.offset_y);
+								const sample_z = Number(z) + Number(info.offset_z);
+							
+								const neighbour_info = this.find_in_grid(sample_x, sample_y, sample_z, output_grid);
+							
+								if(neighbour_info.is_full_block == true){
+									count++;
+								} else {
+									break;
+								}
+							}
+						}
+					
+						if(count < 6){
+							geometries.push(...stored_geometries);
+						}
+					}
+				}
+			}
+		}
 		
 		return [geometries, materials, output_grid]
 	}
