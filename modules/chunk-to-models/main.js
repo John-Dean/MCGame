@@ -279,7 +279,7 @@ class ChunkToModels {
 		}
 	}
 	
-	remove_excess_geometry(valid_sides){
+	merge_valid_sides(valid_sides){
 		let output = [];
 		if(valid_sides.transparent.geometries.length > 0){
 			let transparent_geometry = BufferGeometryUtils.mergeBufferGeometries(valid_sides.transparent.geometries, true);
@@ -311,9 +311,9 @@ class ChunkToModels {
 		// console.log(grid)
 		const valid_sides = this.find_valid_sides(geometries, grid);
 		
-		
-		let trimmed_geometries = this.remove_excess_geometry(valid_sides);
+		let trimmed_geometries = this.merge_valid_sides(valid_sides);
 		console.log(trimmed_geometries)
+		
 		let meshes = [];
 		for(let i = 0; i < trimmed_geometries.length; i++){
 			let mesh = new THREE.Mesh(trimmed_geometries[i], material);
