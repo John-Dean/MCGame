@@ -28,6 +28,11 @@ class GridArray extends Array {
 	}
 }
 
+const wireframe = new THREE.MeshBasicMaterial({
+	color: 0xff0000,
+	wireframe: true
+});
+
 class ChunkToModels {
 	constructor(model_cache = new ModelCache()){
 		this.model_cache = model_cache;
@@ -167,7 +172,7 @@ class ChunkToModels {
 		return x_info;
 	}
 	
-	merge_geometries(geometries, grid){
+	find_valid_sides(geometries, grid){
 		if(geometries.length == 0){
 			throw "No geometries provided"
 		}
@@ -179,42 +184,46 @@ class ChunkToModels {
 		let valid_geometries_opaque = [];
 		let valid_material_indexes_opaque = [];
 		
-		let transparent_material_record = {};
 		
 		for(let i = 0; i < geometries.length; i++){
 			const geometry = geometries[i];
-			const x = geometry.userData.x;
-			const y = geometry.userData.y;
-			const z = geometry.userData.z;
+			const geometry_data = geometry.userData;
+			const base_data = geometry_data.parent;
+			const x = Number(geometry_data.x);
+			const y = Number(geometry_data.y);
+			const z = Number(geometry_data.z);
+			const transparent_material_record = {};
 			
-			let removed_sides = { transparent: [], opaque: [] };
+			const removed_sides = { transparent: [], opaque: [] };
 			
-			const sides = geometry.userData.parent.sides;
+			const sides = base_data.sides;
 			for(let type in sides){
 				for(let side in side_info){
 					const info = side_info[side];
 					
 					if(sides[type][side] == true){
-						let sample_x = Number(x) + Number(info.offset_x);
-						let sample_y = Number(y) + Number(info.offset_y);
-						let sample_z = Number(z) + Number(info.offset_z);
+						const sample_x = x + Number(info.offset_x);
+						const sample_y = y + Number(info.offset_y);
+						const sample_z = z + Number(info.offset_z);
 						
-						let neighbour_info = this.find_in_grid(sample_x, sample_y, sample_z, grid);
-						let type_info = neighbour_info[type] || {};
+						const neighbour_info = this.find_in_grid(sample_x, sample_y, sample_z, grid);
+						const type_info = neighbour_info[type] || {};
+						
+						//If the matching side is present, we need to remove the side
 						if(type_info[info.pairing] == true){
 							removed_sides[type].push(side);
 							
-							
+							//If transparent, get the material of the transparent neighbour and store it for later
 							if(type == "transparent"){
 								if(transparent_material_record[side] == undefined){
 									transparent_material_record[side] = {};
 								}
 								
-								let transparent_material_info = neighbour_info.transparent_materials || {};
-								let materials = transparent_material_info[info.pairing] || [];
+								const transparent_material_info = neighbour_info.transparent_materials || {};
+								const materials = transparent_material_info[info.pairing] || [];
 								
 								for(let i = 0; i < materials.length; i++){
-									let uuid = materials[i];
+									const uuid = materials[i];
 									transparent_material_record[side][uuid] = true;
 								}
 							}
@@ -223,18 +232,21 @@ class ChunkToModels {
 				}
 			}
 			
-						
+			
+			// removed_sides is now a object containing which opaque and transparent sides should be removed
+			// transparent_material_record will contain a list of the sides that have been removed and what materials they collided with
+			console.log(removed_sides, transparent_material_record)
+			
 			const groups = geometry.groups;
 			let valid_groups = [];
 			for(let g = 0; g < groups.length; g++){
-				const group_data = geometry.userData.parent.groups[g];
+				const group_data = base_data.groups[g];
 				
 				const transparent = group_data.transparency;
 				let prefixes = ["opaque"];
 				if(transparent){
 					prefixes.push("transparent");
 				}
-				
 				
 				let is_valid = true;
 				for(let p = 0; p < prefixes.length; p++){
@@ -275,7 +287,8 @@ class ChunkToModels {
 				const group_number = valid_groups[i];
 				const group_geometry = this.separate_group(geometry, group_number);
 				const material_index = group_geometry.groups[0].materialIndex;
-				const is_transparent = geometry.userData.parent.groups[group_number].transparent;
+				const is_transparent = base_data.groups[group_number].transparency;
+				
 				if(is_transparent){
 					valid_geometries_transparent.push(group_geometry)
 					valid_material_indexes_transparent.push(material_index)
@@ -286,25 +299,41 @@ class ChunkToModels {
 			}
 		}
 		
+		return {
+			transparent: {
+				geometries: valid_geometries_transparent,
+				material_indexes: 	valid_material_indexes_transparent
+			},
+			
+			opaque: {
+				geometries: valid_geometries_opaque,
+				material_indexes: 	valid_material_indexes_opaque
+			}
+		}
+	}
+	
+	remove_excess_geometry(valid_sides){
 		let output = [];
-		if(valid_geometries_transparent.length > 0){
-			let transparent_geometry = BufferGeometryUtils.mergeBufferGeometries(valid_geometries_transparent, true);
+		if(valid_sides.transparent.geometries.length > 0){
+			let transparent_geometry = BufferGeometryUtils.mergeBufferGeometries(valid_sides.transparent.geometries, true);
 			for(let i = 0; i < transparent_geometry.groups.length; i++){
-				transparent_geometry.groups[i].materialIndex = 	valid_material_indexes_transparent[i];
+				transparent_geometry.groups[i].materialIndex = 	valid_sides.transparent.material_indexes[i];
 			}
 			// transparent_geometry = BufferGeometryUtils.mergeGroups(transparent_geometry)
 			output.push(transparent_geometry);
 		}
 			
-		if(valid_geometries_opaque.length > 0){
-			let opaque_geometry = BufferGeometryUtils.mergeBufferGeometries(valid_geometries_opaque, true);
+		if(valid_sides.opaque.geometries.length > 0){
+			let opaque_geometry = BufferGeometryUtils.mergeBufferGeometries(valid_sides.opaque.geometries, true);
 			for(let i = 0; i < opaque_geometry.groups.length; i++){
-				opaque_geometry.groups[i].materialIndex = 	valid_material_indexes_opaque[i];
+				opaque_geometry.groups[i].materialIndex = 	valid_sides.opaque.material_indexes[i];
 			}
 		
 			// opaque_geometry = BufferGeometryUtils.mergeGroups(opaque_geometry)
 			output.push(opaque_geometry);
 		}
+		console.log(valid_sides)
+		
 		return output;
 	}
 	
@@ -313,18 +342,18 @@ class ChunkToModels {
 		
 		this.process_grid(grid)
 		// console.log(grid)
-		let merged_geometries = this.merge_geometries(geometries, grid);
+		const valid_sides = this.find_valid_sides(geometries, grid);
+		
+		
+		let trimmed_geometries = this.remove_excess_geometry(valid_sides);
+		console.log(trimmed_geometries)
 		let meshes = [];
-		for(let i = 0; i < merged_geometries.length; i++){
-			let mesh = new THREE.Mesh(merged_geometries[i], material);
-			const wireframe = new THREE.MeshBasicMaterial({
-				color: 0xff0000,
-				wireframe: true
-			});
+		for(let i = 0; i < trimmed_geometries.length; i++){
+			let mesh = new THREE.Mesh(trimmed_geometries[i], material);
+
 			// mesh.material = wireframe;
 			meshes.push(mesh)
 		}
-		
 		
 		return meshes
 	}
