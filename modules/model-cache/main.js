@@ -74,6 +74,15 @@ class ModelCache {
 		this.materials = []
 		
 		this.variant_selector = VariantSelector;
+		
+		this.base_sides = {
+			x_low: true,
+			x_high: true,
+			y_low: true,
+			y_high: true,
+			z_low: true,
+			z_high: true
+		}
 	}
 	
 	static was_cache_miss = was_cache_miss;
@@ -283,11 +292,15 @@ class ModelCache {
 			}
 			
 			group.sides = {};
+			group.valid_sides = {};
 			
 			for(let key in count){
 				group.sides[key] = false;
 				if(count[key] == number_of_positions_in_group){
 					group.sides[key] = true;
+					if(this.base_sides[key] == true){
+						group.valid_sides[key] = true;
+					}
 				}
 			}
 			
@@ -709,6 +722,7 @@ class ModelCache {
 			
 			this.is_rectangle_groups(clean_model);
 			
+			geometry.userData.is_valid = true;
 			clean_model.name = model_name;
 			options.model = model_name;
 			clean_model.userData = options;
@@ -717,8 +731,13 @@ class ModelCache {
 			
 			return remapped_model;
 		} catch(error){
-			console.error("Error encountered on:",model_name,options,error)
-			return new THREE.Mesh();
+			console.error("Error encountered on:", model_name, options, error)
+			let mesh = new THREE.Mesh()
+			mesh.userData = options;
+			mesh.name = model_name;
+			mesh.geometry.userData.is_valid = false;
+			console.log(mesh)
+			return mesh;
 		}
 	}
 	

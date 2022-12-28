@@ -45,6 +45,12 @@ class ChunkToModels {
 			z_equal_low:	{ pairing: "z_equal_high",	offset_x: +0, offset_y: +0, offset_z: -1, broad: "z_low" },
 			z_equal_high:	{ pairing: "z_equal_low",	offset_x: +0, offset_y: +0, offset_z: +1, broad: "z_high" }
 		}
+		
+		this.broad_to_base = {};
+		for(let side_name in this.side_info){
+			const side = this.side_info[side_name]
+			this.broad_to_base[side.broad] = side_name;	
+		}
 	}
 	
 	separate_group(geometry, group_number){
@@ -176,8 +182,10 @@ class ChunkToModels {
 		if(geometries.length == 0){
 			throw "No geometries provided"
 		}
+		const types = ["opaque", "transparent"]
 		
 		const side_info = this.side_info;
+		const broad_to_base = this.broad_to_base;
 		
 		let valid_geometries_transparent = [];
 		let valid_material_indexes_transparent = [];
@@ -194,27 +202,43 @@ class ChunkToModels {
 			const z = Number(geometry_data.z);
 			const transparent_material_record = {};
 			
-			const removed_sides = { transparent: [], opaque: [] };
+			const removed_sides = {};
+			for(let t = 0; t < types.length; t++){
+				removed_sides[types[t]] = {};
+			}
 			
 			const sides = base_data.sides;
-			for(let type in sides){
-				for(let side in side_info){
-					const info = side_info[side];
+			for(let side in side_info){
+				const info = side_info[side];
 					
-					if(sides[type][side] == true){
-						const sample_x = x + Number(info.offset_x);
-						const sample_y = y + Number(info.offset_y);
-						const sample_z = z + Number(info.offset_z);
+				const sample_x = x + Number(info.offset_x);
+				const sample_y = y + Number(info.offset_y);
+				const sample_z = z + Number(info.offset_z);
 						
-						const neighbour_info = this.find_in_grid(sample_x, sample_y, sample_z, grid);
-						const type_info = neighbour_info[type] || {};
+				const neighbour_info = this.find_in_grid(sample_x, sample_y, sample_z, grid);
+				const neighbour_info_opaque = neighbour_info.opaque || {}
+				const neighbour_info_transparent = neighbour_info.transparent || {}
 						
-						//If the matching side is present, we need to remove the side
-						if(type_info[info.pairing] == true){
-							removed_sides[type].push(side);
-							
-							//If transparent, get the material of the transparent neighbour and store it for later
-							if(type == "transparent"){
+				const matching_side = info.pairing;
+					
+				const neighbour_matching_side_opaque = neighbour_info_opaque[matching_side]
+				const neighbour_matching_side_transparent = neighbour_info_transparent[matching_side]
+					
+				for(let t = 0; t < types.length; t++){
+					const type = types[t];
+						
+					// If I have a valid side there
+					if(sides[type][side]){
+						//Check the neighbour for opaque sides - if there are any then we remove this
+						if(type == "opaque"){
+							if(neighbour_matching_side_opaque == true){
+								removed_sides[type][side] = true;
+							}
+						}
+						//If my side is transparent
+						if(type == "transparent"){
+							//If the neighbour has any transparent sides we log them for later
+							if(neighbour_matching_side_transparent == true){
 								if(transparent_material_record[side] == undefined){
 									transparent_material_record[side] = {};
 								}
@@ -234,48 +258,42 @@ class ChunkToModels {
 			
 			
 			// removed_sides is now a object containing which opaque and transparent sides should be removed
-			// transparent_material_record will contain a list of the sides that have been removed and what materials they collided with
-			console.log(removed_sides, transparent_material_record)
+			// transparent_material_record will contain a list of neighbouring transparent side materials
 			
 			const groups = geometry.groups;
 			let valid_groups = [];
 			for(let g = 0; g < groups.length; g++){
 				const group_data = base_data.groups[g];
-				
 				const transparent = group_data.transparency;
-				let prefixes = ["opaque"];
+				const material = group_data.material_uuid;
+				
+				let valid_group = true;
+				
+				let type = "opaque";
 				if(transparent){
-					prefixes.push("transparent");
+					type = "transparent";	
 				}
 				
-				let is_valid = true;
-				for(let p = 0; p < prefixes.length; p++){
-					const prefix = prefixes[p];
-					for(let i = 0; i < removed_sides[prefix].length; i++){
-						const base_side = removed_sides[prefix][i];
-						// This will handle any groups that exceed the block bounds
-						const side = side_info[base_side].broad;
-						if(group_data.sides[side] == true){
-							// Transparent faces should get culled if next to opaque faces, or same material transparent faces
-							if(transparent && prefix == "transparent"){
-								let transparent_materials = transparent_material_record[base_side];
-								let material = group_data.material_uuid;
-								if(transparent_materials[material] != true){
-									continue;
-								}
-							}
-						
-							is_valid = false;
-							break;
+				for(let broad_side in group_data.valid_sides){
+					const side = broad_to_base[broad_side];
+					
+					if(removed_sides[type][side] == true){
+						valid_group = false;
+						break;
+					}
+					
+					if(transparent){
+						const transparent_materials = transparent_material_record[side] || {};
+						if(transparent_materials[material] == true){
+							valid_group = false;
+							break;	
 						}
 					}
 					
-					if(!is_valid){
-						break;
-					}
 				}
-				if(is_valid){
-					valid_groups.push(g);
+				
+				if(valid_group){
+					valid_groups.push(g);	
 				}
 			}
 			
@@ -302,12 +320,12 @@ class ChunkToModels {
 		return {
 			transparent: {
 				geometries: valid_geometries_transparent,
-				material_indexes: 	valid_material_indexes_transparent
+				material_indexes: valid_material_indexes_transparent
 			},
 			
 			opaque: {
 				geometries: valid_geometries_opaque,
-				material_indexes: 	valid_material_indexes_opaque
+				material_indexes: valid_material_indexes_opaque
 			}
 		}
 	}
@@ -392,6 +410,10 @@ class ChunkToModels {
 			const geometry = model.geometry;
 			const geometry_data = geometry.userData;
 			
+			if(geometry.userData.is_valid == false){
+				continue;
+			}
+			
 			if(output_grid[y] == undefined){
 				output_grid[y] = []
 			}
@@ -453,7 +475,7 @@ class ChunkToModels {
 						if(should_clone_geometry){
 							const geometry = parent_geometry.clone();
 							geometry.translate(position_x, position_y, position_z)
-							
+														
 							geometry.userData = {
 								x: position_x,
 								y: position_y,
