@@ -46,10 +46,10 @@ class ChunkToModels {
 			z_equal_high:	{ pairing: "z_equal_low",	offset_x: +0, offset_y: +0, offset_z: +1, broad: "z_high" }
 		}
 		
-		this.broad_to_base = {};
+		this.broad_to_specific = {};
 		for(let side_name in this.side_info){
 			const side = this.side_info[side_name]
-			this.broad_to_base[side.broad] = side_name;	
+			this.broad_to_specific[side.broad] = side_name;
 		}
 	}
 	
@@ -182,137 +182,87 @@ class ChunkToModels {
 		if(geometries.length == 0){
 			throw "No geometries provided"
 		}
-		const types = ["opaque", "transparent"]
 		
 		const side_info = this.side_info;
-		const broad_to_base = this.broad_to_base;
+		const broad_to_specific = this.broad_to_specific;
 		
-		let valid_geometries_transparent = [];
-		let valid_material_indexes_transparent = [];
-		let valid_geometries_opaque = [];
-		let valid_material_indexes_opaque = [];
+		const valid_geometries_transparent = [];
+		const valid_material_indexes_transparent = [];
+		const valid_geometries_opaque = [];
+		const valid_material_indexes_opaque = [];
 		
 		
 		for(let i = 0; i < geometries.length; i++){
 			const geometry = geometries[i];
+			const groups = geometry.groups;
 			const geometry_data = geometry.userData;
 			const base_data = geometry_data.parent;
 			const x = Number(geometry_data.x);
 			const y = Number(geometry_data.y);
 			const z = Number(geometry_data.z);
-			const transparent_material_record = {};
-			
-			const removed_sides = {};
-			for(let t = 0; t < types.length; t++){
-				removed_sides[types[t]] = {};
-			}
-			
-			const sides = base_data.sides;
-			for(let side in side_info){
-				const info = side_info[side];
-					
-				const sample_x = x + Number(info.offset_x);
-				const sample_y = y + Number(info.offset_y);
-				const sample_z = z + Number(info.offset_z);
-						
-				const neighbour_info = this.find_in_grid(sample_x, sample_y, sample_z, grid);
-				const neighbour_info_opaque = neighbour_info.opaque || {}
-				const neighbour_info_transparent = neighbour_info.transparent || {}
-						
-				const matching_side = info.pairing;
-					
-				const neighbour_matching_side_opaque = neighbour_info_opaque[matching_side]
-				const neighbour_matching_side_transparent = neighbour_info_transparent[matching_side]
-					
-				for(let t = 0; t < types.length; t++){
-					const type = types[t];
-						
-					// If I have a valid side there
-					if(sides[type][side]){
-						//Check the neighbour for opaque sides - if there are any then we remove this
-						if(type == "opaque"){
-							if(neighbour_matching_side_opaque == true){
-								removed_sides[type][side] = true;
-							}
-						}
-						//If my side is transparent
-						if(type == "transparent"){
-							//If the neighbour has any transparent sides we log them for later
-							if(neighbour_matching_side_transparent == true){
-								if(transparent_material_record[side] == undefined){
-									transparent_material_record[side] = {};
-								}
-								
-								const transparent_material_info = neighbour_info.transparent_materials || {};
-								const materials = transparent_material_info[info.pairing] || [];
-								
-								for(let i = 0; i < materials.length; i++){
-									const uuid = materials[i];
-									transparent_material_record[side][uuid] = true;
-								}
-							}
-						}
-					}
-				}
-			}
-			
-			
-			// removed_sides is now a object containing which opaque and transparent sides should be removed
-			// transparent_material_record will contain a list of neighbouring transparent side materials
-			
-			const groups = geometry.groups;
-			let valid_groups = [];
+			const neighbours = {};
 			for(let g = 0; g < groups.length; g++){
 				const group_data = base_data.groups[g];
 				const transparent = group_data.transparency;
 				const material = group_data.material_uuid;
+				const material_index = group_data.materialIndex;
 				
-				let valid_group = true;
-				
-				let type = "opaque";
-				if(transparent){
-					type = "transparent";	
-				}
-				
+				let should_keep_group = true;
+				//Check the valid sides in each group (valid sides are ones where the group is present)
 				for(let broad_side in group_data.valid_sides){
-					const side = broad_to_base[broad_side];
+					//Convert the side to the specific version (i.e. instead of >=16 it is =16)
+					const side = broad_to_specific[broad_side];
+					const info = side_info[side];
 					
-					if(removed_sides[type][side] == true){
-						valid_group = false;
+					//Get the matching side (i.e. top matches with bottom)
+					const matching_side = info.pairing;
+					
+					//If we haven't already fetched the neighbour, fetch them
+					if(neighbours[side] == undefined){
+						const sample_x = x + Number(info.offset_x);
+						const sample_y = y + Number(info.offset_y);
+						const sample_z = z + Number(info.offset_z);
+						neighbours[side] = this.find_in_grid(sample_x, sample_y, sample_z, grid);
+					}
+					const neighbour_info = neighbours[side];
+					
+					//Gather the opaque/transparent matching sides information from the neighbour
+					const neighbour_info_opaque = neighbour_info.opaque || {};
+					const neighbour_matching_side_opaque = neighbour_info_opaque[matching_side];
+					
+					const neighbour_info_transparent = neighbour_info.transparent || {};
+					const neighbour_matching_side_transparent = neighbour_info_transparent[matching_side];
+					
+					//If the neighbour has a matching opaque side, then we need to stop
+					if(neighbour_matching_side_opaque == true){
+						should_keep_group = false;
 						break;
 					}
-					
+					// If my side is transparent
 					if(transparent){
-						const transparent_materials = transparent_material_record[side] || {};
-						if(transparent_materials[material] == true){
-							valid_group = false;
-							break;	
+						// and the neighbour has any transparent sides
+						if(neighbour_matching_side_transparent == true){
+							const neighbour_transparent_material_info = neighbour_info.transparent_materials || {};
+							const neighbour_materials = neighbour_transparent_material_info[info.pairing] || [];
+							
+							//If the neighbour has matching transparent materials, we need to remove this group
+							if(neighbour_materials.indexOf(material) >= 0){
+								should_keep_group = false;
+								break;
+							}
 						}
 					}
-					
 				}
 				
-				if(valid_group){
-					valid_groups.push(g);	
-				}
-			}
-			
-			if(valid_groups.length == 0){
-				continue;
-			}
-			
-			for(let i = 0; i < valid_groups.length; i++){
-				const group_number = valid_groups[i];
-				const group_geometry = this.separate_group(geometry, group_number);
-				const material_index = group_geometry.groups[0].materialIndex;
-				const is_transparent = base_data.groups[group_number].transparency;
-				
-				if(is_transparent){
-					valid_geometries_transparent.push(group_geometry)
-					valid_material_indexes_transparent.push(material_index)
-				} else {
-					valid_geometries_opaque.push(group_geometry)
-					valid_material_indexes_opaque.push(material_index)
+				if(should_keep_group){
+					const group_geometry = this.separate_group(geometry, g);
+					if(transparent){
+						valid_geometries_transparent.push(group_geometry)
+						valid_material_indexes_transparent.push(material_index)
+					} else {
+						valid_geometries_opaque.push(group_geometry)
+						valid_material_indexes_opaque.push(material_index)
+					}
 				}
 			}
 		}
@@ -322,7 +272,6 @@ class ChunkToModels {
 				geometries: valid_geometries_transparent,
 				material_indexes: valid_material_indexes_transparent
 			},
-			
 			opaque: {
 				geometries: valid_geometries_opaque,
 				material_indexes: valid_material_indexes_opaque
