@@ -329,17 +329,10 @@ class ChunkToModels {
 		return meshes
 	}
 	
-	async get_geometries_and_materials(chunk_data, should_presort_geometry = true){
-		const materials = this.model_cache.materials;
-		const wireframe = new THREE.MeshBasicMaterial({
-			color: 0xff0000,
-			wireframe: true
-		});
+	async convert_to_grid(chunk_data){
+		const output_grid = {};
 		
-		let output_grid = {};
-		
-		let data = chunk_data.data;
-		let geometries = [];
+		const data = chunk_data.data;
 		for(let i = 0; i < data.length; i++){
 			const instance = data[i];
 			const model_data = instance.data;
@@ -384,63 +377,79 @@ class ChunkToModels {
 			if(geometry_data.is_full_block == true){
 				output_grid[y][z][x].is_full_block = true;
 			}
-			
-			if(!should_presort_geometry){
-				geometries.push(geometry);
-			}
 		}
 		
-		if(should_presort_geometry){
-			const side_info = this.side_info;
-			for(let y in output_grid){
-				const y_data = output_grid[y];
-				for(let z in y_data){
-					const z_data = y_data[z];
-					for(let x in z_data){
-						const stored_geometries = z_data[x];
-						const is_full_block = stored_geometries.is_full_block;
-						let count = 0;
+		return output_grid;
+	}
+	
+	extract_geometries_from_grid(grid){
+		const geometries = [];
+		
+		const side_info = this.side_info;
+		for(let y in grid){
+			const y_data = grid[y];
+			for(let z in y_data){
+				const z_data = y_data[z];
+				for(let x in z_data){
+					const stored_geometries = z_data[x];
 					
+					const position_x = Number(x)
+					const position_y = Number(y)
+					const position_z = Number(z)
+					
+					for(let i = 0; i < stored_geometries.length; i++){
+						const parent_geometry = stored_geometries[i];
+						const geometry_data = parent_geometry.userData;
+						const is_full_block = geometry_data.is_full_block;
+						
+						let should_clone_geometry = false;
 						if(is_full_block){
 							for(let side in side_info){
 								const info = side_info[side];
-								const sample_x = Number(x) + Number(info.offset_x);
-								const sample_y = Number(y) + Number(info.offset_y);
-								const sample_z = Number(z) + Number(info.offset_z);
-							
-								const neighbour_info = this.find_in_grid(sample_x, sample_y, sample_z, output_grid);
-							
-								if(neighbour_info.is_full_block == true){
-									count++;
-								} else {
+								const sample_x = position_x + Number(info.offset_x);
+								const sample_y = position_y + Number(info.offset_y);
+								const sample_z = position_z + Number(info.offset_z);
+								
+								const neighbour_info = this.find_in_grid(sample_x, sample_y, sample_z, grid);
+								
+								if(neighbour_info.is_full_block != true){
+									should_clone_geometry = true;
 									break;
 								}
 							}
+						} else {
+							should_clone_geometry = true;
 						}
-					
-						if(count < 6){
-							const cloned_geometries = stored_geometries.map(parent_geometry => {
-								const geometry = parent_geometry.clone();
-								const position_x = Number(x)
-								const position_y = Number(y)
-								const position_z = Number(z)
-								
-								geometry.translate(position_x, position_y, position_z)
-			
-								const parent_data = parent_geometry.userData;
-								geometry.userData = { x: position_x, y: position_y, z: position_z, parent: parent_data }
-								
-								return geometry;
-							});
+						
+						if(should_clone_geometry){
+							const geometry = parent_geometry.clone();
+							geometry.translate(position_x, position_y, position_z)
 							
-							geometries.push(...cloned_geometries);
+							geometry.userData = {
+								x: position_x,
+								y: position_y,
+								z: position_z,
+								parent: geometry_data
+							}
+							
+							geometries.push(geometry);
 						}
 					}
 				}
 			}
 		}
 		
-		return [geometries, materials, output_grid]
+		return geometries;
+	}
+	
+	async get_geometries_and_materials(chunk_data){
+		const materials = this.model_cache.materials;
+		
+		const grid = await this.convert_to_grid(chunk_data)
+		
+		const geometries = this.extract_geometries_from_grid(grid);
+		
+		return [geometries, materials, grid]
 	}
 }
  
