@@ -37,13 +37,20 @@ class ChunkToModels {
 	constructor(model_cache = new ModelCache()){
 		this.model_cache = model_cache;
 		
+		Object.defineProperty(this, 'materials', {
+			get: function(){
+				return this.model_cache.materials;
+			},
+			enumerable: true
+		});
+		
 		this.side_info = {
-			x_equal_low:	{ pairing: "x_equal_high",	offset_x: -1, offset_y: +0, offset_z: +0, broad: "x_low" },
-			x_equal_high:	{ pairing: "x_equal_low",	offset_x: +1, offset_y: +0, offset_z: +0, broad: "x_high" },
-			y_equal_low:	{ pairing: "y_equal_high",	offset_x: +0, offset_y: -1, offset_z: +0, broad: "y_low" },
-			y_equal_high:	{ pairing: "y_equal_low",	offset_x: +0, offset_y: +1, offset_z: +0, broad: "y_high" },
-			z_equal_low:	{ pairing: "z_equal_high",	offset_x: +0, offset_y: +0, offset_z: -1, broad: "z_low" },
-			z_equal_high:	{ pairing: "z_equal_low",	offset_x: +0, offset_y: +0, offset_z: +1, broad: "z_high" }
+			x_equal_low:	{ pairing: "x_equal_high",	offset_x: -1, offset_y: +0, offset_z: +0, broad: "x_low"	},
+			x_equal_high:	{ pairing: "x_equal_low",	offset_x: +1, offset_y: +0, offset_z: +0, broad: "x_high"	},
+			y_equal_low:	{ pairing: "y_equal_high",	offset_x: +0, offset_y: -1, offset_z: +0, broad: "y_low"	},
+			y_equal_high:	{ pairing: "y_equal_low",	offset_x: +0, offset_y: +1, offset_z: +0, broad: "y_high"	},
+			z_equal_low:	{ pairing: "z_equal_high",	offset_x: +0, offset_y: +0, offset_z: -1, broad: "z_low"	},
+			z_equal_high:	{ pairing: "z_equal_low",	offset_x: +0, offset_y: +0, offset_z: +1, broad: "z_high"	}
 		}
 		
 		this.broad_to_specific = {};
@@ -208,16 +215,16 @@ class ChunkToModels {
 				const material_index = group_data.materialIndex;
 				
 				let should_keep_group = true;
-				//Check the valid sides in each group (valid sides are ones where the group is present)
+				// Check the valid sides in each group (valid sides are ones where the group is present)
 				for(let broad_side in group_data.valid_sides){
-					//Convert the side to the specific version (i.e. instead of >=16 it is =16)
+					// Convert the side to the specific version (i.e. instead of >=16 it is =16)
 					const side = broad_to_specific[broad_side];
 					const info = side_info[side];
 					
-					//Get the matching side (i.e. top matches with bottom)
+					// Get the matching side (i.e. top matches with bottom)
 					const matching_side = info.pairing;
 					
-					//If we haven't already fetched the neighbour, fetch them
+					// If we haven't already fetched the neighbour, fetch them
 					if(neighbours[side] == undefined){
 						const sample_x = x + Number(info.offset_x);
 						const sample_y = y + Number(info.offset_y);
@@ -226,14 +233,14 @@ class ChunkToModels {
 					}
 					const neighbour_info = neighbours[side];
 					
-					//Gather the opaque/transparent matching sides information from the neighbour
+					// Gather the opaque/transparent matching sides information from the neighbour
 					const neighbour_info_opaque = neighbour_info.opaque || {};
 					const neighbour_matching_side_opaque = neighbour_info_opaque[matching_side];
 					
 					const neighbour_info_transparent = neighbour_info.transparent || {};
 					const neighbour_matching_side_transparent = neighbour_info_transparent[matching_side];
 					
-					//If the neighbour has a matching opaque side, then we need to stop
+					// If the neighbour has a matching opaque side, then we need to stop
 					if(neighbour_matching_side_opaque == true){
 						should_keep_group = false;
 						break;
@@ -245,7 +252,7 @@ class ChunkToModels {
 							const neighbour_transparent_material_info = neighbour_info.transparent_materials || {};
 							const neighbour_materials = neighbour_transparent_material_info[info.pairing] || [];
 							
-							//If the neighbour has matching transparent materials, we need to remove this group
+							// If the neighbour has matching transparent materials, we need to remove this group
 							if(neighbour_materials.indexOf(material) >= 0){
 								should_keep_group = false;
 								break;
@@ -256,6 +263,8 @@ class ChunkToModels {
 				
 				if(should_keep_group){
 					const group_geometry = this.separate_group(geometry, g);
+					group_geometry.userData = group_data;
+					
 					if(transparent){
 						valid_geometries_transparent.push(group_geometry)
 						valid_material_indexes_transparent.push(material_index)
@@ -305,7 +314,9 @@ class ChunkToModels {
 	}
 	
 	async convert_to_model(chunk_data){
-		const [geometries, material, grid] = await this.get_geometries_and_materials(chunk_data);
+		const [geometries, grid] = await this.get_geometries_and_grid(chunk_data);
+		
+		let materials = this.materials;
 		
 		this.process_grid(grid)
 		// console.log(grid)
@@ -314,13 +325,15 @@ class ChunkToModels {
 		let trimmed_geometries = this.merge_valid_sides(valid_sides);
 		console.log(trimmed_geometries)
 		
-		let meshes = [];
+		let meshes = new THREE.Group();
 		for(let i = 0; i < trimmed_geometries.length; i++){
-			let mesh = new THREE.Mesh(trimmed_geometries[i], material);
-
+			let mesh = new THREE.Mesh(trimmed_geometries[i], materials);
+			
 			// mesh.material = wireframe;
-			meshes.push(mesh)
+			meshes.add(mesh)
 		}
+		
+		meshes.userData = grid;
 		
 		return meshes
 	}
@@ -442,14 +455,12 @@ class ChunkToModels {
 		return geometries;
 	}
 	
-	async get_geometries_and_materials(chunk_data){
-		const materials = this.model_cache.materials;
-		
+	async get_geometries_and_grid(chunk_data){
 		const grid = await this.convert_to_grid(chunk_data)
 		
 		const geometries = this.extract_geometries_from_grid(grid);
 		
-		return [geometries, materials, grid]
+		return [geometries, grid]
 	}
 }
  

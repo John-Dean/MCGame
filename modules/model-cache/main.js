@@ -3,6 +3,8 @@ import { BlockLoader } from "../block-loader/main.js";
 import { ModelCleaner } from "../model-cleaner/main.js";
 import { THREE } from "/packaged/node-modules.js"
 
+import { GeometryPointArray } from "../geometry_point_array/main.js";
+
 const add_cache_hit_flag = function(object){
 	Object.defineProperty(object, 'cache_hit', {
 		value: true,
@@ -20,47 +22,6 @@ const was_cache_miss = function(object){
 	return true;
 }
 
-class ExtendedArray extends Float32Array {
-	get x(){
-		return this[0]
-	}
-	
-	set x(value){
-		this[0] = value;
-	}
-
-	get y(){
-		return this[1]
-	}
-
-	set y(value){
-		this[1] = value;
-	}
-
-	get z(){
-		return this[2]
-	}
-
-	set z(value){
-		this[2] = value;
-	}
-
-	get u(){
-		return this[0]
-	}
-
-	set u(value){
-		this[0] = value;
-	}
-
-	get v(){
-		return this[1]
-	}
-
-	set v(value){
-		this[1] = value;
-	}
-}
 
 
 class ModelCache {
@@ -94,7 +55,15 @@ class ModelCache {
 	pick_variant(){
 		return this.variant_selector.pick_blockstate(...arguments)
 	}
-	
+
+	check_material(material){
+		if(material.map != null){
+			const texture = material.map;
+			texture.wrapS = THREE.RepeatWrapping;
+			texture.wrapT = THREE.RepeatWrapping;
+		}
+	}
+
 	remap_model(model){
 		const global_materials_index = this.materials_index;
 		const global_materials = this.materials;
@@ -115,6 +84,7 @@ class ModelCache {
 				material_index = global_materials.length;
 				global_materials_index[uuid] = material_index;
 				global_materials[material_index] = material;
+				this.check_material(material);
 			}
 			
 			mapping[i] = material_index;
@@ -559,9 +529,9 @@ class ModelCache {
 		let i3 = index * 3;
 		let i2 = index * 2;
 				
-		let position = new ExtendedArray(3);
-		let normal = new ExtendedArray(3);
-		let uv = new ExtendedArray(2);
+		let position = new GeometryPointArray(3);
+		let normal = new GeometryPointArray(3);
+		let uv = new GeometryPointArray(2);
 				
 		position.x = positions[i3 + 0]
 		position.y = positions[i3 + 1]
@@ -655,25 +625,45 @@ class ModelCache {
 			let top_right;
 			let bottom_left;
 			let bottom_right;
+			let all_valid = true;
+			
+			let order = new Array(count);
 			
 			for(let i = 0; i < count; i++){
 				let point = this.get_point(positions, normals, uvs, start, i, index_map);
+				let valid = false;
 				if(point.uv.u == 0){
 					if(point.uv.v == 0){
 						top_left = point;
+						order[i] = 1
+						valid = true;
 					}
 					if(point.uv.v == 1){
-						top_right = point;
+						bottom_left = point;
+						order[i] = 2
+						valid = true;
 					}
 				}
 				if(point.uv.u == 1){
 					if(point.uv.v == 0){
-						bottom_left = point;
+						top_right = point;
+						order[i] = 3
+						valid = true;
 					}
 					if(point.uv.v == 1){
 						bottom_right = point;
+						order[i] = 4
+						valid = true;
 					}
 				}
+				
+				if(!valid){
+					all_valid = false;
+				}
+			}
+			
+			if(!all_valid){
+				continue;
 			}
 			
 			if(top_left == undefined || top_right == undefined || bottom_left == undefined || bottom_right == undefined){
@@ -696,6 +686,7 @@ class ModelCache {
 				bottom_left: bottom_left.index,
 				bottom_right: bottom_right.index
 			}
+			group.point_order = Number(order.join(""));
 			group.is_rectangle = true;
 		}
 	}
