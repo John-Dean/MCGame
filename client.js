@@ -30,13 +30,13 @@ console.log(data)
 let chunk_to_models = new ChunkToModels(model_cache);
 console.time("chunk")
 let chunk_models = await chunk_to_models.convert_to_model(data);
-// chunk_models = greedy_mesher.remesh(chunk_models)
+chunk_models = greedy_mesher.remesh(chunk_models)
 console.timeEnd("chunk")
 
 for(let i = 0; i < 10; i++){
 	console.time("chunk")
 	let chunk_models = await chunk_to_models.convert_to_model(data);
-	// chunk_models = greedy_mesher.remesh(chunk_models)
+	chunk_models = greedy_mesher.remesh(chunk_models)
 	console.timeEnd("chunk")
 }
 

@@ -51,12 +51,8 @@ class GreedyMesher {
 	}
 	
 	points_equal(position_1, position_2){
-		if(position_1.x == position_2.x){
-			if(position_1.y == position_2.y){
-				if(position_1.z == position_2.z){
-					return true;
-				}
-			}
+		if(position_1.x == position_2.x && position_1.y == position_2.y && position_1.z == position_2.z){
+			return true;
 		}
 		return false;
 	}
@@ -65,22 +61,15 @@ class GreedyMesher {
 		const base_top_right = base_face.points.top_right;
 		const base_bottom_left = base_face.points.bottom_left;
 		const base_bottom_right = base_face.points.bottom_right;
-		const base_material = base_face.data.materialIndex;
 		
-		let did_merge_faces = false;
+		const new_faces = [];
 		
 		for(let i = 0; i < faces.length; i++){
 			const face = faces[i];
-			if(face == undefined){
-				continue;
-			}
+			let did_merge_faces = false;
 			
-			const material = face.data.materialIndex;
-			if(material != base_material){
-				continue;
-			}
-			
-			if(face.uuid == base_face.uuid){
+			if(face.index == base_face.index){
+				new_faces.push(face);
 				continue;
 			}
 			
@@ -88,90 +77,75 @@ class GreedyMesher {
 			
 			if(horizontal){
 				if(this.points_equal(top_left.position, base_top_right.position)){
-					if(this.points_equal(top_left.normal, base_top_right.normal)){
-						const bottom_left = face.points.bottom_left;
-						if(this.points_equal(bottom_left.position, base_bottom_right.position)){
-							if(this.points_equal(bottom_left.normal, base_bottom_right.normal)){
-								const top_right = face.points.top_right;
-								const bottom_right = face.points.bottom_right;
+					const bottom_left = face.points.bottom_left;
+					if(this.points_equal(bottom_left.position, base_bottom_right.position)){
+						const top_right = face.points.top_right;
+						const bottom_right = face.points.bottom_right;
 								
-								const addition = bottom_right.uv.u;
+						const addition = bottom_right.uv.u;
 								
-								base_top_right.uv.u += addition;
-								base_bottom_right.uv.u += addition;
-								base_top_right.position = top_right.position;
-								base_bottom_right.position = bottom_right.position;
-								
-								faces[i] = undefined;
-								did_merge_faces = true;
-							}
-						}
+						base_top_right.uv.u += addition;
+						base_bottom_right.uv.u += addition;
+						base_top_right.position = top_right.position;
+						base_bottom_right.position = bottom_right.position;
+						
+						did_merge_faces = true;
 					}
 				}
 			}
 			if(vertical){
 				if(this.points_equal(top_left.position, base_bottom_left.position)){
-					if(this.points_equal(top_left.normal, base_bottom_left.normal)){
-						const top_right = face.points.top_right;
-						if(this.points_equal(top_right.position, base_bottom_right.position)){
-							if(this.points_equal(top_right.normal, base_bottom_right.normal)){
-								const bottom_left = face.points.bottom_left;
-								const bottom_right = face.points.bottom_right;
+					const top_right = face.points.top_right;
+					if(this.points_equal(top_right.position, base_bottom_right.position)){
+						const bottom_left = face.points.bottom_left;
+						const bottom_right = face.points.bottom_right;
 								
-								const addition = bottom_right.uv.v;
+						const addition = bottom_right.uv.v;
 								
-								base_bottom_left.uv.v += addition;
-								base_bottom_right.uv.v += addition;
-								base_bottom_left.position = bottom_left.position;
-								base_bottom_right.position = bottom_right.position;
-								
-								faces[i] = undefined;
-								did_merge_faces = true;
-							}
-						}
+						base_bottom_left.uv.v += addition;
+						base_bottom_right.uv.v += addition;
+						base_bottom_left.position = bottom_left.position;
+						base_bottom_right.position = bottom_right.position;
+						
+						did_merge_faces = true;
 					}
 				}
 			}
+			
+			if(!did_merge_faces){
+				new_faces.push(face);
+			}
 		}
 		
-		return did_merge_faces;
+		return new_faces;
 	}
 	
 	greedy_mesh_faces(faces){
 		for(let i = 0; i < faces.length; i++){
 			const face = faces[i];
-			if(face == undefined){
-				continue;
-			}
 			
-			let did_optimize = true;
-			while(did_optimize){
-				did_optimize = this.try_to_merge_faces(face, faces, true, false);
+			while(true){
+				const base_length = faces.length;
+				faces = this.try_to_merge_faces(face, faces, true, false);
+				if(base_length == faces.length){
+					break;
+				}
 			}
 		}
 		
 		for(let i = 0; i < faces.length; i++){
 			const face = faces[i];
-			if(face == undefined){
-				continue;
-			}
 			
-			let did_optimize = true;
-			while(did_optimize){
-				did_optimize = this.try_to_merge_faces(face, faces, false, true);
+			while(true){
+				const base_length = faces.length;
+				faces = this.try_to_merge_faces(face, faces, false, true);
+				if(base_length == faces.length){
+					break;
+				}
 			}
 		}
 		
-		let output = [];
-		for(let i = 0; i < faces.length; i++){
-			const face = faces[i];
-			if(face == undefined){
-				continue;
-			}
-			output.push(face);
-		}
-		
-		return output;
+		return faces;
 	}
 	
 	separate_group(geometry, group_number, original_positions, original_normals, original_uvs){
@@ -223,13 +197,9 @@ class GreedyMesher {
 			face.points.bottom_left,
 			face.points.top_right,
 			face.points.bottom_right
-		]	
+		]
 		
-		const points = point_order.toString().split("").map(index => {
-			return point_map[Number(index)-1]	
-		})
-		
-		
+		const points = point_order.map(index => point_map[index]);
 		
 		const positions = new Float32Array(points.length * 3);
 		const normals = new Float32Array(points.length * 3);
@@ -237,9 +207,9 @@ class GreedyMesher {
 		
 		for(let i = 0; i < points.length; i++){
 			const point = points[i];
-			positions.set(point.position, i * 3);
-			normals.set(point.normal, i * 3);
-			uvs.set(point.uv, i * 2);
+			positions.set(point.position.array, i * 3);
+			normals.set(point.normal.array, i * 3);
+			uvs.set(point.uv.array, i * 2);
 		}
 		
 		buffer_geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
@@ -250,49 +220,9 @@ class GreedyMesher {
 		return buffer_geometry;
 	}
 	
-	compare_geometries(geometry_1, geometry_2){
-		const positions_1 = geometry_1.getAttribute('position').array;
-		const normals_1 = geometry_1.getAttribute('normal').array;
-		const uvs_1 = geometry_1.getAttribute('uv').array;
-		const positions_2 = geometry_2.getAttribute('position').array;
-		const normals_2 = geometry_2.getAttribute('normal').array;
-		const uvs_2 = geometry_2.getAttribute('uv').array;
-		let identical = true;
-		
-		for(let i = 0; i < positions_1.length; i++){
-			if(positions_1[i] != positions_2[i]){
-				identical = false;
-				break;
-			}
-		}
-		
-		if(!identical){
-			return identical;
-		}
-		
-		for(let i = 0; i < normals_1.length; i++){
-			if(normals_1[i] != normals_2[i]){
-				identical = false;
-				break;
-			}
-		}
-		
-		if(!identical){
-			return identical;
-		}
-		
-		for(let i = 0; i < uvs_1.length; i++){
-			if(uvs_1[i] != uvs_2[i]){
-				identical = false;
-				break;
-			}
-		}
-		return identical
-	}
-	
 	reconstruct_geometry(groups){
-		let data = [];
-		let geometries = [];
+		const data = [];
+		const geometries = [];
 		
 		for(let i = 0; i < groups.length; i++){
 			const group = groups[i];
@@ -305,19 +235,17 @@ class GreedyMesher {
 			}
 			
 			const geometry = this.construct_rectangle_geometry(group, group.data.point_order);
-			
 			geometries.push(geometry);
 		}
 		
 		const merged_geometry = BufferGeometryUtils.mergeBufferGeometries(geometries, true);
 		for(let i = 0; i < merged_geometry.groups.length; i++){
 			const group = merged_geometry.groups[i];
-			group.materialIndex = data[i].materialIndex
+			group.materialIndex = data[i].materialIndex;
+			geometries[i].dispose();
 		}
 		
-		merged_geometry.userData = {
-			mergedUserData: data
-		}
+		merged_geometry.userData = {}
 		
 		console.log(merged_geometry)
 		
@@ -332,14 +260,14 @@ class GreedyMesher {
 		const normals = geometry.getAttribute('normal').array;
 		const uvs = geometry.getAttribute('uv').array;
 		
-		let valid_groups = [];
-		let invalid_groups = [];
+		let valid_groups = {};
+		let output_groups = [];
 		for(let i = 0; i < groups.length; i++){
 			const group = groups[i];
 			const data = group_data[i];
 			
 			if(data.is_rectangle != true){
-				invalid_groups.push({
+				output_groups.push({
 					index: i,
 					group: group,
 					data: data,
@@ -349,12 +277,22 @@ class GreedyMesher {
 				continue;
 			}
 			
+			const normal = data.normal;
+			const material_index = data.materialIndex;
+			
 			const top_left = this.get_point(group, data.points.top_left, positions, normals, uvs)
 			const top_right = this.get_point(group, data.points.top_right, positions, normals, uvs)
 			const bottom_left = this.get_point(group, data.points.bottom_left, positions, normals, uvs)
 			const bottom_right = this.get_point(group, data.points.bottom_right, positions, normals, uvs)
 			
-			valid_groups.push({
+			if(valid_groups[material_index] == undefined){
+				valid_groups[material_index] = {};
+			}
+			if(valid_groups[material_index][normal] == undefined){
+				valid_groups[material_index][normal] = [];
+			}
+			
+			valid_groups[material_index][normal].push({
 				index: i,
 				group: group,
 				data: data,
@@ -364,16 +302,18 @@ class GreedyMesher {
 					bottom_left: bottom_left,
 					bottom_right: bottom_right
 				},
-				uuid: Symbol(),
 				is_rectangle: true
 			})
 		}
 		
-		console.log(valid_groups.length);
-		valid_groups = this.greedy_mesh_faces(valid_groups);
-		console.log(valid_groups.length);
+		for(let material in valid_groups){
+			for(let normal in valid_groups[material]){
+				const re_meshed_group = 	this.greedy_mesh_faces(valid_groups[material][normal]);
+				output_groups.push(...re_meshed_group);
+			}
+		}
 		
-		const new_geometry = this.reconstruct_geometry(valid_groups.concat(invalid_groups));
+		const new_geometry = this.reconstruct_geometry(output_groups);
 		
 		return new_geometry;
 	}

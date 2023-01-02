@@ -629,32 +629,38 @@ class ModelCache {
 			
 			let order = new Array(count);
 			
+			let normal = undefined;
+			
 			for(let i = 0; i < count; i++){
 				let point = this.get_point(positions, normals, uvs, start, i, index_map);
 				let valid = false;
 				if(point.uv.u == 0){
 					if(point.uv.v == 0){
 						top_left = point;
-						order[i] = 1
+						order[i] = 0
 						valid = true;
 					}
 					if(point.uv.v == 1){
 						bottom_left = point;
-						order[i] = 2
+						order[i] = 1
 						valid = true;
 					}
 				}
 				if(point.uv.u == 1){
 					if(point.uv.v == 0){
 						top_right = point;
-						order[i] = 3
+						order[i] = 2
 						valid = true;
 					}
 					if(point.uv.v == 1){
 						bottom_right = point;
-						order[i] = 4
+						order[i] = 3
 						valid = true;
 					}
+				}
+				
+				if(normal == undefined){
+					normal = point.normal.array.join(",")
 				}
 				
 				if(!valid){
@@ -686,7 +692,8 @@ class ModelCache {
 				bottom_left: bottom_left.index,
 				bottom_right: bottom_right.index
 			}
-			group.point_order = Number(order.join(""));
+			group.point_order = order;
+			group.normal = normal;
 			group.is_rectangle = true;
 		}
 	}
