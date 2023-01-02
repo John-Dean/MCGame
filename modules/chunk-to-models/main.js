@@ -17,14 +17,93 @@ const node_to_csg = function(node){
 	return CSG.fromPolygons(node.allPolygons());
 }
 
-class GridArray extends Array {
+
+class Neighbours extends Object {
+}
+
+class Grid extends Object {
 	constructor(){
 		super();
-		Object.defineProperty(this, 'is_full_block', {
-			value: false,
+		Object.defineProperty(this, 'lowest_point', {
+			value: -64,
 			writable: true,
 			enumerable: false
 		});
+		Object.defineProperty(this, 'highest_point', {
+			value: 256,
+			writable: true,
+			enumerable: false
+		});
+		Object.defineProperty(this, 'interval', {
+			value: 16,
+			writable: true,
+			enumerable: false
+		});
+	}
+	
+	subdivide(){
+		const low = this.lowest_point;
+		const high = this.highest_point;
+		const interval = this.interval;
+		
+		let output = [];
+		for(let i = low; i < high; i += interval){
+			let chunk = [];
+			for(let n = 0; n < interval; n++){
+				let y_value = i + n;
+				const data = this[y_value];
+				if(data == undefined){
+					continue;
+				}
+				chunk.push(data);
+			}
+			if(chunk.length > 0){
+				output.push(chunk);
+			}
+		}
+		return output;
+	}
+	
+	identify_band(y){
+		const low = this.lowest_point;
+		const high = this.highest_point;
+		const interval = this.interval;
+		
+		let band = 0;
+		for(let i = low; i < high; i += interval){
+			if(i <= y && i + interval > y){
+				return i
+			}
+			band++;
+		}
+		
+		return band;
+	}
+}
+
+class GridArray {
+	constructor(){
+		this.is_full_block = false;
+		this.transparent = {
+				x_equal_low: false,
+				x_equal_high: false,
+				y_equal_low: false,
+				y_equal_high: false,
+				z_equal_low: false,
+				z_equal_high: false
+			}
+		this.opaque = {
+				x_equal_low: false,
+				x_equal_high: false,
+				y_equal_low: false,
+				y_equal_high: false,
+				z_equal_low: false,
+				z_equal_high: false
+			}
+		
+		this.transparent_materials = {};
+		
+		this.geometries = [];
 	}
 }
 
@@ -105,188 +184,140 @@ class ChunkToModels {
 		return buffer_geometry;
 	}
 	
-	process_grid(grid){
-		for(let y in grid){
-			let y_data = grid[y];
-			for(let z in y_data){
-				let z_data = y_data[z];
-				for(let x in z_data){
-					let geometries = z_data[x];
-					
-					if(geometries.length == 1){
-						z_data[x] = geometries[0].userData.sides;
-						continue;
-					}
-					
-					const output = {
-						transparent: {
-							x_equal_low: false,
-							x_equal_high: false,
-							y_equal_low: false,
-							y_equal_high: false,
-							z_equal_low: false,
-							z_equal_high: false
-						},
-						opaque: {
-							x_equal_low: false,
-							x_equal_high: false,
-							y_equal_low: false,
-							y_equal_high: false,
-							z_equal_low: false,
-							z_equal_high: false
-						},
-						transparent_materials: {}
-					}
-					
-					for(let i = 0; i < geometries.length; i++){
-						const geometry = geometries[i];
-						let sides = geometry.userData.sides;
-						if(sides == undefined){
-							continue
-						}
-						for(let type of ["transparent", "opaque"]){
-							let type_info = sides[type];
-							if(type_info == undefined){
-								continue;
-							}
-							for(let side in output[type]){
-								output[type][side] = output[type][side] || type_info[side];
-							}
-						}
-						
-						const transparent_materials = sides.transparent_materials;
-						for(let side in transparent_materials){
-							if(output.transparent_materials[side] == undefined){
-								output.transparent_materials[side]	= [];
-							}
-							output.transparent_materials[side].push(...transparent_materials[side])
-						}
-					}
-					
-					z_data[x] = output;
-				}
-			}
-		}
-	}
 	
 	find_in_grid(x, y, z, grid){
 		const y_info = grid[y];
 		if(y_info == undefined){
-			return {};
+			return { is_blank: true };
 		}
 		const z_info = y_info[z];
 		if(z_info == undefined){
-			return {};
+			return { is_blank: true };
 		}
 		const x_info = z_info[x];
 		if(x_info == undefined){
-			return {}
+			return { is_blank: true };
 		}
 		return x_info;
 	}
 	
-	find_valid_sides(geometries, grid){
-		if(geometries.length == 0){
-			throw "No geometries provided"
+	get_neighbours(grid, x, y, z){
+		const neighbours = new Neighbours();
+		const side_info = this.side_info;
+		let is_solid = true;
+		for(let side in side_info){
+			const info = side_info[side];
+			
+			const sample_x = x + Number(info.offset_x);
+			const sample_y = y + Number(info.offset_y);
+			const sample_z = z + Number(info.offset_z);
+			
+			const neighbour = this.find_in_grid(sample_x, sample_y, sample_z, grid);
+			
+			neighbours[side] = neighbour
+			if(neighbour.is_full_block != true){
+				is_solid = false;	
+			}
 		}
+		
+		neighbours.is_solid = is_solid;
+		
+		return neighbours;
+	}
+	
+	geometry_find_valid_sides(geometry, grid, x, y, z, output_opaque, output_transparent){
+		let geometry_clone;
 		
 		const side_info = this.side_info;
 		const broad_to_specific = this.broad_to_specific;
 		
-		const valid_geometries_transparent = [];
-		const valid_material_indexes_transparent = [];
-		const valid_geometries_opaque = [];
-		const valid_material_indexes_opaque = [];
+		const groups = geometry.groups;
+		const base_data = geometry.userData;
+		const neighbours = this.get_neighbours(grid, x, y, z);
 		
+		if(geometry.is_full_block && neighbours.is_solid){
+			return;	
+		}
 		
-		for(let i = 0; i < geometries.length; i++){
-			const geometry = geometries[i];
-			const groups = geometry.groups;
-			const geometry_data = geometry.userData;
-			const base_data = geometry_data.parent;
-			const x = Number(geometry_data.x);
-			const y = Number(geometry_data.y);
-			const z = Number(geometry_data.z);
-			const neighbours = {};
-			for(let g = 0; g < groups.length; g++){
-				const group_data = base_data.groups[g];
-				const transparent = group_data.transparency;
-				const material = group_data.material_uuid;
-				const material_index = group_data.materialIndex;
+		for(let g = 0; g < groups.length; g++){
+			const group_data = base_data.groups[g];
+			const is_transparent = group_data.transparency;
+			const material = group_data.material_uuid;
 				
-				let should_keep_group = true;
-				// Check the valid sides in each group (valid sides are ones where the group is present)
-				for(let broad_side in group_data.valid_sides){
-					// Convert the side to the specific version (i.e. instead of >=16 it is =16)
-					const side = broad_to_specific[broad_side];
-					const info = side_info[side];
+			let should_keep_group = true;
+			// Check the valid sides in each group (valid sides are ones where the group is present)
+			for(let broad_side in group_data.valid_sides){
+				// Convert the side to the specific version (i.e. instead of >=16 it is =16)
+				const side = broad_to_specific[broad_side];
+				const info = side_info[side];
 					
-					// Get the matching side (i.e. top matches with bottom)
-					const matching_side = info.pairing;
+				// Get the matching side (i.e. top matches with bottom)
+				const matching_side = info.pairing;
+				
+				const neighbour_info = neighbours[side];
+				
+				if(neighbour_info.is_full_block){
+					should_keep_group = false;
+					break;
+				}
+				if(neighbour_info.is_blank){
+					continue;
+				}
 					
-					// If we haven't already fetched the neighbour, fetch them
-					if(neighbours[side] == undefined){
-						const sample_x = x + Number(info.offset_x);
-						const sample_y = y + Number(info.offset_y);
-						const sample_z = z + Number(info.offset_z);
-						neighbours[side] = this.find_in_grid(sample_x, sample_y, sample_z, grid);
-					}
-					const neighbour_info = neighbours[side];
+				// Gather the opaque/transparent matching sides information from the neighbour
+				const neighbour_info_opaque = neighbour_info.opaque || {};
+				const neighbour_matching_side_opaque = neighbour_info_opaque[matching_side];
 					
-					// Gather the opaque/transparent matching sides information from the neighbour
-					const neighbour_info_opaque = neighbour_info.opaque || {};
-					const neighbour_matching_side_opaque = neighbour_info_opaque[matching_side];
+				const neighbour_info_transparent = neighbour_info.transparent || {};
+				const neighbour_matching_side_transparent = neighbour_info_transparent[matching_side];
 					
-					const neighbour_info_transparent = neighbour_info.transparent || {};
-					const neighbour_matching_side_transparent = neighbour_info_transparent[matching_side];
-					
-					// If the neighbour has a matching opaque side, then we need to stop
-					if(neighbour_matching_side_opaque == true){
-						should_keep_group = false;
-						break;
-					}
-					// If my side is transparent
-					if(transparent){
-						// and the neighbour has any transparent sides
-						if(neighbour_matching_side_transparent == true){
-							const neighbour_transparent_material_info = neighbour_info.transparent_materials || {};
-							const neighbour_materials = neighbour_transparent_material_info[info.pairing] || [];
+				// If the neighbour has a matching opaque side, then we need to stop
+				if(neighbour_matching_side_opaque == true){
+					should_keep_group = false;
+					break;
+				}
+				// If my side is transparent
+				if(is_transparent){
+					// and the neighbour has any transparent sides
+					if(neighbour_matching_side_transparent == true){
+						const neighbour_transparent_material_info = neighbour_info.transparent_materials || {};
+						const neighbour_materials = neighbour_transparent_material_info[info.pairing] || [];
 							
-							// If the neighbour has matching transparent materials, we need to remove this group
-							if(neighbour_materials.indexOf(material) >= 0){
-								should_keep_group = false;
-								break;
-							}
+						// If the neighbour has matching transparent materials, we need to remove this group
+						if(neighbour_materials.indexOf(material) >= 0){
+							should_keep_group = false;
+							break;
 						}
 					}
 				}
+			}
+			
+			if(should_keep_group){
+				const material_index = group_data.materialIndex;
 				
-				if(should_keep_group){
-					const group_geometry = this.separate_group(geometry, g);
-					group_geometry.userData = group_data;
+				if(geometry_clone == undefined){
+					geometry_clone = geometry.clone();
+					geometry_clone.translate(x, y, z)
+				}
+				
+				const group_geometry = this.separate_group(geometry_clone, g);
+				group_geometry.userData = group_data;
 					
-					if(transparent){
-						valid_geometries_transparent.push(group_geometry)
-						valid_material_indexes_transparent.push(material_index)
-					} else {
-						valid_geometries_opaque.push(group_geometry)
-						valid_material_indexes_opaque.push(material_index)
-					}
+				if(is_transparent){
+					output_transparent.geometries.push(group_geometry)
+					output_transparent.material_indexes.push(material_index)
+				} else {
+					output_opaque.geometries.push(group_geometry)
+					output_opaque.material_indexes.push(material_index)
 				}
 			}
 		}
 		
-		return {
-			transparent: {
-				geometries: valid_geometries_transparent,
-				material_indexes: valid_material_indexes_transparent
-			},
-			opaque: {
-				geometries: valid_geometries_opaque,
-				material_indexes: valid_material_indexes_opaque
-			}
+		if(geometry_clone != undefined){
+			geometry_clone.dispose();	
 		}
 	}
+	
 	
 	merge_valid_sides(valid_sides){
 		let output = [];
@@ -294,6 +325,7 @@ class ChunkToModels {
 			let transparent_geometry = BufferGeometryUtils.mergeBufferGeometries(valid_sides.transparent.geometries, true);
 			for(let i = 0; i < transparent_geometry.groups.length; i++){
 				transparent_geometry.groups[i].materialIndex = 	valid_sides.transparent.material_indexes[i];
+				valid_sides.transparent.geometries[i].dispose();
 			}
 			// transparent_geometry = BufferGeometryUtils.mergeGroups(transparent_geometry)
 			output.push(transparent_geometry);
@@ -303,6 +335,7 @@ class ChunkToModels {
 			let opaque_geometry = BufferGeometryUtils.mergeBufferGeometries(valid_sides.opaque.geometries, true);
 			for(let i = 0; i < opaque_geometry.groups.length; i++){
 				opaque_geometry.groups[i].materialIndex = 	valid_sides.opaque.material_indexes[i];
+				valid_sides.opaque.geometries[i].dispose();
 			}
 		
 			// opaque_geometry = BufferGeometryUtils.mergeGroups(opaque_geometry)
@@ -318,11 +351,7 @@ class ChunkToModels {
 		
 		let materials = this.materials;
 		
-		this.process_grid(grid)
-		// console.log(grid)
-		const valid_sides = this.find_valid_sides(geometries, grid);
-		
-		let trimmed_geometries = this.merge_valid_sides(valid_sides);
+		let trimmed_geometries = this.merge_valid_sides(geometries);
 		console.log(trimmed_geometries)
 		
 		let meshes = new THREE.Group();
@@ -338,8 +367,41 @@ class ChunkToModels {
 		return meshes
 	}
 	
+	process_geometry(geometry, grid_cell){
+		const geometry_data = geometry.userData;
+		
+		grid_cell.geometries.push(geometry)
+			
+		if(geometry_data.is_full_block == true){
+			grid_cell.is_full_block = true;
+		}
+			
+		let sides = geometry_data.sides;
+		if(sides == undefined){
+			return;
+		}
+		
+		for(let type of ["transparent", "opaque"]){
+			let type_info = sides[type];
+			if(type_info == undefined){
+				return;
+			}
+			for(let side in grid_cell[type]){
+				grid_cell[type][side] = grid_cell[type][side] || type_info[side];
+			}
+		}
+						
+		const transparent_materials = sides.transparent_materials;
+		for(let side in transparent_materials){
+			if(grid_cell.transparent_materials[side] == undefined){
+				grid_cell.transparent_materials[side]	= [];
+			}
+			grid_cell.transparent_materials[side].push(...transparent_materials[side])
+		}
+	}
+	
 	async convert_to_grid(chunk_data){
-		const output_grid = {};
+		const output_grid = new Grid();
 		
 		const data = chunk_data.data;
 		for(let i = 0; i < data.length; i++){
@@ -370,7 +432,6 @@ class ChunkToModels {
 			}
 			
 			const geometry = model.geometry;
-			const geometry_data = geometry.userData;
 			
 			if(geometry.userData.is_valid == false){
 				continue;
@@ -385,26 +446,29 @@ class ChunkToModels {
 			if(output_grid[y][z][x] == undefined){
 				output_grid[y][z][x] = new GridArray();
 			}
-			output_grid[y][z][x].push(geometry)
 			
-			if(geometry_data.is_full_block == true){
-				output_grid[y][z][x].is_full_block = true;
-			}
+			this.process_geometry(geometry, output_grid[y][z][x]);
 		}
 		
 		return output_grid;
 	}
 	
 	extract_geometries_from_grid(grid){
-		const geometries = [];
+		const opaque = {
+			geometries: [],
+			material_indexes: []
+		}
+		const transparent = {
+			geometries: [],
+			material_indexes: []
+		}
 		
-		const side_info = this.side_info;
 		for(let y in grid){
 			const y_data = grid[y];
 			for(let z in y_data){
 				const z_data = y_data[z];
 				for(let x in z_data){
-					const stored_geometries = z_data[x];
+					const stored_geometries = z_data[x].geometries;
 					
 					const position_x = Number(x)
 					const position_y = Number(y)
@@ -412,51 +476,23 @@ class ChunkToModels {
 					
 					for(let i = 0; i < stored_geometries.length; i++){
 						const parent_geometry = stored_geometries[i];
-						const geometry_data = parent_geometry.userData;
-						const is_full_block = geometry_data.is_full_block;
 						
-						let should_clone_geometry = false;
-						if(is_full_block){
-							for(let side in side_info){
-								const info = side_info[side];
-								const sample_x = position_x + Number(info.offset_x);
-								const sample_y = position_y + Number(info.offset_y);
-								const sample_z = position_z + Number(info.offset_z);
-								
-								const neighbour_info = this.find_in_grid(sample_x, sample_y, sample_z, grid);
-								
-								if(neighbour_info.is_full_block != true){
-									should_clone_geometry = true;
-									break;
-								}
-							}
-						} else {
-							should_clone_geometry = true;
-						}
-						
-						if(should_clone_geometry){
-							const geometry = parent_geometry.clone();
-							geometry.translate(position_x, position_y, position_z)
-														
-							geometry.userData = {
-								x: position_x,
-								y: position_y,
-								z: position_z,
-								parent: geometry_data
-							}
-							
-							geometries.push(geometry);
-						}
+						this.geometry_find_valid_sides(parent_geometry, grid, position_x, position_y, position_z, opaque, transparent);
 					}
 				}
 			}
 		}
 		
-		return geometries;
+		return {
+			opaque: opaque,
+			transparent: transparent
+		};
 	}
 	
 	async get_geometries_and_grid(chunk_data){
 		const grid = await this.convert_to_grid(chunk_data)
+		
+		// console.log(grid)
 		
 		const geometries = this.extract_geometries_from_grid(grid);
 		

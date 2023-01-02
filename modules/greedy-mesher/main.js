@@ -1,4 +1,3 @@
-import { ModelCache } from "../model-cache/main.js";
 import { THREE, CSG, CSGNode, BufferGeometryUtils } from "/packaged/node-modules.js"
 import { GeometryPointArray } from "../geometry_point_array/main.js";
 
@@ -384,6 +383,8 @@ class GreedyMesher {
 		for(let i = 0; i < meshes.length; i++){
 			const mesh = meshes[i];
 			let new_geometry = this.greedy_mesh_geometry(mesh.geometry);
+			new_geometry = BufferGeometryUtils.mergeGroups(new_geometry)
+			
 			mesh.geometry = new_geometry;
 		}
 		
