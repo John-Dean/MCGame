@@ -69,14 +69,8 @@ class Grid extends Object {
 		const high = this.highest_point;
 		const interval = this.interval;
 		
-		let band = 0;
-		for(let i = low; i < high; i += interval){
-			if(i <= y && i + interval > y){
-				return i
-			}
-			band++;
-		}
-		
+		let offset = y - low;
+		let band = Math.floor(offset / interval);
 		return band;
 	}
 }
@@ -85,21 +79,21 @@ class GridArray {
 	constructor(){
 		this.is_full_block = false;
 		this.transparent = {
-				x_equal_low: false,
-				x_equal_high: false,
-				y_equal_low: false,
-				y_equal_high: false,
-				z_equal_low: false,
-				z_equal_high: false
-			}
+			x_equal_low: false,
+			x_equal_high: false,
+			y_equal_low: false,
+			y_equal_high: false,
+			z_equal_low: false,
+			z_equal_high: false
+		}
 		this.opaque = {
-				x_equal_low: false,
-				x_equal_high: false,
-				y_equal_low: false,
-				y_equal_high: false,
-				z_equal_low: false,
-				z_equal_high: false
-			}
+			x_equal_low: false,
+			x_equal_high: false,
+			y_equal_low: false,
+			y_equal_high: false,
+			z_equal_low: false,
+			z_equal_high: false
+		}
 		
 		this.transparent_materials = {};
 		
@@ -216,7 +210,7 @@ class ChunkToModels {
 			
 			neighbours[side] = neighbour
 			if(neighbour.is_full_block != true){
-				is_solid = false;	
+				is_solid = false;
 			}
 		}
 		
@@ -236,7 +230,7 @@ class ChunkToModels {
 		const neighbours = this.get_neighbours(grid, x, y, z);
 		
 		if(geometry.is_full_block && neighbours.is_solid){
-			return;	
+			return;
 		}
 		
 		for(let g = 0; g < groups.length; g++){
@@ -301,7 +295,13 @@ class ChunkToModels {
 				}
 				
 				const group_geometry = this.separate_group(geometry_clone, g);
-				group_geometry.userData = group_data;
+				group_geometry.userData = {
+					parent: group_data,
+					x: x,
+					y: y,
+					z: z,
+					band: grid.identify_band(y)
+				};
 					
 				if(is_transparent){
 					output_transparent.geometries.push(group_geometry)
@@ -314,7 +314,7 @@ class ChunkToModels {
 		}
 		
 		if(geometry_clone != undefined){
-			geometry_clone.dispose();	
+			geometry_clone.dispose();
 		}
 	}
 	
@@ -329,6 +329,9 @@ class ChunkToModels {
 			}
 			// transparent_geometry = BufferGeometryUtils.mergeGroups(transparent_geometry)
 			output.push(transparent_geometry);
+			transparent_geometry.userData = {
+				groups: transparent_geometry.userData.mergedUserData
+			}
 		}
 			
 		if(valid_sides.opaque.geometries.length > 0){
@@ -340,7 +343,11 @@ class ChunkToModels {
 		
 			// opaque_geometry = BufferGeometryUtils.mergeGroups(opaque_geometry)
 			output.push(opaque_geometry);
+			opaque_geometry.userData = {
+				groups: opaque_geometry.userData.mergedUserData
+			}
 		}
+		
 		console.log(valid_sides)
 		
 		return output;

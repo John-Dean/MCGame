@@ -254,7 +254,7 @@ class GreedyMesher {
 	
 	greedy_mesh_geometry(geometry){
 		const groups = geometry.groups;
-		const group_data = geometry.userData.mergedUserData;
+		const group_data = geometry.userData.groups;
 		
 		const positions = geometry.getAttribute('position').array;
 		const normals = geometry.getAttribute('normal').array;
@@ -265,37 +265,42 @@ class GreedyMesher {
 		for(let i = 0; i < groups.length; i++){
 			const group = groups[i];
 			const data = group_data[i];
+			const parent_data = data.parent;
 			
-			if(data.is_rectangle != true){
+			if(parent_data.is_rectangle != true){
 				output_groups.push({
 					index: i,
 					group: group,
-					data: data,
+					data: parent_data,
 					is_rectangle: false,
 					buffer_geometry: this.separate_group(geometry, i, positions, normals, uvs)
 				})
 				continue;
 			}
 			
-			const normal = data.normal;
-			const material_index = data.materialIndex;
+			const band = data.band;
+			const normal = parent_data.normal;
+			const material_index = parent_data.materialIndex;
 			
-			const top_left = this.get_point(group, data.points.top_left, positions, normals, uvs)
-			const top_right = this.get_point(group, data.points.top_right, positions, normals, uvs)
-			const bottom_left = this.get_point(group, data.points.bottom_left, positions, normals, uvs)
-			const bottom_right = this.get_point(group, data.points.bottom_right, positions, normals, uvs)
+			const top_left = this.get_point(group, parent_data.points.top_left, positions, normals, uvs)
+			const top_right = this.get_point(group, parent_data.points.top_right, positions, normals, uvs)
+			const bottom_left = this.get_point(group, parent_data.points.bottom_left, positions, normals, uvs)
+			const bottom_right = this.get_point(group, parent_data.points.bottom_right, positions, normals, uvs)
 			
-			if(valid_groups[material_index] == undefined){
-				valid_groups[material_index] = {};
+			if(valid_groups[band] == undefined){
+				valid_groups[band] = {};
 			}
-			if(valid_groups[material_index][normal] == undefined){
-				valid_groups[material_index][normal] = [];
+			if(valid_groups[band][material_index] == undefined){
+				valid_groups[band][material_index] = {};
+			}
+			if(valid_groups[band][material_index][normal] == undefined){
+				valid_groups[band][material_index][normal] = [];
 			}
 			
-			valid_groups[material_index][normal].push({
+			valid_groups[band][material_index][normal].push({
 				index: i,
 				group: group,
-				data: data,
+				data: parent_data,
 				points: {
 					top_left: top_left,
 					top_right: top_right,
@@ -306,10 +311,12 @@ class GreedyMesher {
 			})
 		}
 		
-		for(let material in valid_groups){
-			for(let normal in valid_groups[material]){
-				const re_meshed_group = 	this.greedy_mesh_faces(valid_groups[material][normal]);
-				output_groups.push(...re_meshed_group);
+		for(let band in valid_groups){
+			for(let material in valid_groups[band]){
+				for(let normal in valid_groups[band][material]){
+					const re_meshed_group = 	this.greedy_mesh_faces(valid_groups[band][material][normal]);
+					output_groups.push(...re_meshed_group);
+				}
 			}
 		}
 		
