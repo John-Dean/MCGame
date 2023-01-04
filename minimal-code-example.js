@@ -1,24 +1,16 @@
 import { THREE, OrbitControls } from "/packaged/node-modules.js"
 
-console.log("Okay")
 
-import { MapLoader} from "./modules/map-loader/main.js";
+import { ModelCache } from "./modules/model-cache/main.js"
 
-let map_loader = new MapLoader();
-await map_loader.add_resource_pack("/assets/resource-pack/")
-await map_loader.load_world("/assets/Sample World/");
 
 const scene = new THREE.Scene();
 const width = window.innerWidth;
 const height = window.innerHeight;
 
-let chunk_models = await map_loader.load_chunk(0, 0)
-chunk_models = await map_loader.load_chunk(0, 0)
-chunk_models = await map_loader.load_chunk(0, 0)
 
-scene.add(chunk_models)
-
-
+let model_cache = new ModelCache();
+await model_cache.add_resource_pack("/assets/resource-pack/")
 
 // const camera = new THREE.PerspectiveCamera(75, width / height, 0.1, 1000);
 const camera = new THREE.OrthographicCamera(width / -2, width / 2, height / 2, height / -2, 1, 1000);
@@ -52,6 +44,17 @@ const controls = new OrbitControls(camera, renderer.domElement)
 
 const ambient_light = new THREE.AmbientLight(0x404040, 4); // soft white light
 scene.add(ambient_light);
+
+
+let sc_variants = await model_cache.get_blockstates("block/oak_stairs");
+console.log(sc_variants)
+let variant = await model_cache.pick_variant(sc_variants, { facing: "east", in_wall: false, open: false, half: "bottom", shape: "straight" });
+console.log(variant)
+let model = await model_cache.get_model(variant)
+console.log(model)
+
+scene.add(model)
+
 
 
 function animate(){

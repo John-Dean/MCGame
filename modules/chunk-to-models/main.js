@@ -353,8 +353,8 @@ class ChunkToModels {
 		return output;
 	}
 	
-	async convert_to_model(chunk_data){
-		const [geometries, grid] = await this.get_geometries_and_grid(chunk_data);
+	async convert_to_model(grid){		
+		let geometries = this.extract_geometries_from_grid(grid);
 		
 		let materials = this.materials;
 		
@@ -368,8 +368,6 @@ class ChunkToModels {
 			// mesh.material = wireframe;
 			meshes.add(mesh)
 		}
-		
-		meshes.userData = grid;
 		
 		return meshes
 	}
@@ -461,6 +459,7 @@ class ChunkToModels {
 	}
 	
 	extract_geometries_from_grid(grid){
+		//Expand this function to also take neighbouring grids
 		const opaque = {
 			geometries: [],
 			material_indexes: []
@@ -494,16 +493,6 @@ class ChunkToModels {
 			opaque: opaque,
 			transparent: transparent
 		};
-	}
-	
-	async get_geometries_and_grid(chunk_data){
-		const grid = await this.convert_to_grid(chunk_data)
-		
-		// console.log(grid)
-		
-		const geometries = this.extract_geometries_from_grid(grid);
-		
-		return [geometries, grid]
 	}
 }
  
