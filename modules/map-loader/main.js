@@ -26,26 +26,26 @@ class MapLoader {
 		return this.chunk_data.load_world(...arguments);
 	}
 	
-	async get_chunk_data(x, y){
-		let chunk_id = x + "," + y;
+	async get_chunk_data(x, z){
+		let chunk_id = x + "," + z;
 		if(this.cached_chunk_data[chunk_id] != undefined){
 			return this.cached_chunk_data[chunk_id];
 		}
 		
 		console.time("chunk-file-load")
-		let data = await this.chunk_data.get_chunk_data(x, y)
+		let data = await this.chunk_data.get_chunk_data(x, z)
 		this.cached_chunk_data[chunk_id] = data;
 		console.timeEnd("chunk-file-load")
 		
 		return data;
 	}
 	
-	async get_chunk_grid(x, y){
-		let chunk_id = x + "," + y;
+	async get_chunk_grid(x, z){
+		let chunk_id = x + "," + z;
 			
 		let grid = this.cached_chunk_grid[chunk_id];
 		if(grid == undefined){
-			let chunk_data = await this.get_chunk_data(x, y)
+			let chunk_data = await this.get_chunk_data(x, z)
 			
 			console.time("creating-grid")		
 			grid = await this.chunk_to_models.convert_to_grid(chunk_data)
@@ -58,28 +58,40 @@ class MapLoader {
 	}
 	
 	
-	async get_chunk_model(x, y){
-		let chunk_id = x + "," + y;
+	async get_chunk_model(x, z){
+		let chunk_id = x + "," + z;
 		
 		let model = this.cached_chunk_models[chunk_id];
 		if(model == undefined){
-			let grid = await this.get_chunk_grid(x, y);
+			console.time("chunk-obtaining")
+			let grid = await this.get_chunk_grid(x, z);
+			
+			grid.x_low = await this.get_chunk_grid(x-1, z);
+			grid.x_high = await this.get_chunk_grid(x+1, z);
+			grid.z_low = await this.get_chunk_grid(x, z-1);
+			grid.z_high = await this.get_chunk_grid(x, z+1);
+			console.timeEnd("chunk-obtaining")
+			
+			console.time("chunk-to-model")
 			model = await this.chunk_to_models.convert_to_model(grid)
+			console.timeEnd("chunk-to-model")
 			this.cached_chunk_models[chunk_id] = model;
 			
-			console.timeEnd("chunk-processing")
+			model.position.x = x * 16;
+			model.position.z = z * 16;
+			
 		}
 		
 		return model.clone()
 	}
 	
-	async load_chunk(x, y){
-		let chunk_models = await this.get_chunk_model(x, y);
+	async load_chunk(x, z){
+		let chunk_models = await this.get_chunk_model(x, z);
+		
 		
 		console.time("chunk-remeshing")
 		let remeshed_chunk_models = this.mesher.remesh(chunk_models)
 		console.timeEnd("chunk-remeshing")
-		
 		return remeshed_chunk_models;
 	}
 }

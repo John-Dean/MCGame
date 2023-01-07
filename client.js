@@ -2,7 +2,7 @@ import { THREE, OrbitControls } from "/packaged/node-modules.js"
 
 console.log("Okay")
 
-import { MapLoader} from "./modules/map-loader/main.js";
+import { MapLoader } from "./modules/map-loader/main.js";
 
 let map_loader = new MapLoader();
 await map_loader.add_resource_pack("/assets/resource-pack/")
@@ -12,11 +12,19 @@ const scene = new THREE.Scene();
 const width = window.innerWidth;
 const height = window.innerHeight;
 
-let chunk_models = await map_loader.load_chunk(0, 0)
-chunk_models = await map_loader.load_chunk(0, 0)
-chunk_models = await map_loader.load_chunk(0, 0)
+let range = {
+	x_low: -1,
+	x_high: -1,
+	z_low: -1,
+	z_high: -1
+}
 
-scene.add(chunk_models)
+for(let x = range.x_low; x <= range.x_high; x++){
+	for(let z = range.z_low; z <= range.z_high; z++){
+		let chunk_models = await map_loader.load_chunk(x, z)
+		scene.add(chunk_models)
+	}
+}
 
 
 

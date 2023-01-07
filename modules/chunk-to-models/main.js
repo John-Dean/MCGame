@@ -39,6 +39,27 @@ class Grid extends Object {
 			writable: true,
 			enumerable: false
 		});
+		
+		Object.defineProperty(this, 'x_low', {
+			value: undefined,
+			writable: true,
+			enumerable: false
+		});
+		Object.defineProperty(this, 'x_high', {
+			value: undefined,
+			writable: true,
+			enumerable: false
+		});
+		Object.defineProperty(this, 'z_low', {
+			value: undefined,
+			writable: true,
+			enumerable: false
+		});
+		Object.defineProperty(this, 'z_high', {
+			value: undefined,
+			writable: true,
+			enumerable: false
+		});
 	}
 	
 	subdivide(){
@@ -180,18 +201,51 @@ class ChunkToModels {
 	
 	
 	find_in_grid(x, y, z, grid){
-		const y_info = grid[y];
-		if(y_info == undefined){
+		if(grid == undefined){
 			return { is_blank: true };
 		}
-		const z_info = y_info[z];
-		if(z_info == undefined){
-			return { is_blank: true };
+		
+		let y_info;
+		let z_info;
+		let x_info = { is_blank: true };
+		
+		
+		/* z */{
+			if(z < 0){
+				return this.find_in_grid(x, y, z + 16, grid.z_low);
+			} else if(z >= 0 && z < 16){
+				/* y */{
+					y_info = grid[y];
+					if(y_info == undefined){
+						return { is_blank: true };
+					}
+				}
+				z_info = y_info[z];
+			} else if(z >= 16){
+				return this.find_in_grid(x, y, z - 16, grid.z_high);
+			}
+			
+			
+			if(z_info == undefined || (typeof z_info === "object" && z_info.is_blank == true)){
+				return { is_blank: true };
+			}
 		}
-		const x_info = z_info[x];
-		if(x_info == undefined){
-			return { is_blank: true };
+		
+		/* x */{
+			if(x < 0){
+				return this.find_in_grid(x + 16, y, z, grid.x_low);
+			} else if(x >= 0 && x < 16){
+				x_info = z_info[x];
+			} else if(x >= 16){
+				return this.find_in_grid(x - 16, y, z, grid.x_high);
+			}
+			
+			
+			if(x_info == undefined || (typeof z_info === "object" && z_info.is_blank == true)){
+				return { is_blank: true };
+			}
 		}
+		
 		return x_info;
 	}
 	
@@ -227,6 +281,10 @@ class ChunkToModels {
 		
 		const groups = geometry.groups;
 		const base_data = geometry.userData;
+		if(base_data.groups == undefined){
+			base_data.groups = []	
+		}
+		
 		const neighbours = this.get_neighbours(grid, x, y, z);
 		
 		if(geometry.is_full_block && neighbours.is_solid){
@@ -234,7 +292,7 @@ class ChunkToModels {
 		}
 		
 		for(let g = 0; g < groups.length; g++){
-			const group_data = base_data.groups[g];
+			const group_data = base_data.groups[g] || {};
 			const is_transparent = group_data.transparency;
 			const material = group_data.material_uuid;
 				
@@ -353,7 +411,7 @@ class ChunkToModels {
 		return output;
 	}
 	
-	async convert_to_model(grid){		
+	async convert_to_model(grid){
 		let geometries = this.extract_geometries_from_grid(grid);
 		
 		let materials = this.materials;
@@ -459,7 +517,7 @@ class ChunkToModels {
 	}
 	
 	extract_geometries_from_grid(grid){
-		//Expand this function to also take neighbouring grids
+		// Expand this function to also take neighbouring grids
 		const opaque = {
 			geometries: [],
 			material_indexes: []
