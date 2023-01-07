@@ -26,15 +26,32 @@ class ChunkData {
 	}
 	
 	add_section(section, output){
-		if(section.block_states == undefined){
+		// These for some reason need mapping as they're defined wrong in RegionReader in 1.18
+		if(section.Palette == undefined){
+			Object.defineProperty(section, 'Palette', {
+				get: function(){
+					return section.block_states.palette
+				}
+			});
+		}
+		if(section.BlockStates == undefined){
+			Object.defineProperty(section, 'BlockStates', {
+				get: function(){
+					return (section.block_states || {}).data
+				}
+			});
+		}
+		
+		
+		if(section.BlockStates == undefined){
 			return;
 		}
-		const palette = section.block_states.palette || [];
-		const data = section.block_states.data;
 		
 		const offset_y = (section.Y * 16)
 		
-		if(data == undefined){
+		const palette = section.Palette
+		
+		if(section.BlockStates == undefined){
 			if(palette.length == 1 && palette[0] != undefined){
 				const block_data	=	palette[0];
 				if(block_data.Name == "minecraft:air"){
@@ -53,17 +70,8 @@ class ChunkData {
 				}
 			}
 		} else {
-			// These for some reason need mapping as they're defined wrong in RegionReader
-			Object.defineProperty(section, 'Palette', {
-				get: function(){
-					return palette
-				}
-			});
-			Object.defineProperty(section, 'BlockStates', {
-				get: function(){
-					return data
-				}
-			});
+			console.log(palette)
+			console.log(section.BlockStates)
 			this.region_reader.walkBlockStateId(section, function(x, y, z, id){
 				const block_x	=	x;
 				const block_y	=	y + offset_y;
@@ -81,7 +89,7 @@ class ChunkData {
 	}
 	
 	add_blocks(blocks, output){
-		const sections = blocks.sections || []
+		const sections = blocks.sections || (blocks.Level || {}).Sections || []
 		for(let i = 0; i < sections.length; i++){
 			const section = sections[i];
 			this.add_section(section, output);
@@ -153,11 +161,13 @@ class ChunkData {
 		let blocks_promise = this.world.load_chunk_blocks(x, z);
 		let entities_promise = this.world.load_chunk_entities(x, z);
 		
+		
 		let blocks = await blocks_promise;
 		let entities = await entities_promise;
 		
 		let chunk_data = [];
 		this.add_blocks(blocks, chunk_data);
+		console.log(chunk_data)
 		this.add_entities(entities, chunk_data);
 		
 		console.timeEnd();

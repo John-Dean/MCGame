@@ -6,17 +6,19 @@ import { MapLoader } from "./modules/map-loader/main.js";
 
 let map_loader = new MapLoader();
 await map_loader.add_resource_pack("/assets/resource-pack/")
-await map_loader.load_world("/assets/Sample World/");
+await map_loader.load_world("/assets/Sample World 2/");
+
+console.log(await map_loader.get_world_data())
 
 const scene = new THREE.Scene();
 const width = window.innerWidth;
 const height = window.innerHeight;
 
 let range = {
-	x_low: -1,
-	x_high: -1,
-	z_low: -1,
-	z_high: -1
+	x_low: 0,
+	x_high: 0,
+	z_low: 0,
+	z_high: 0
 }
 
 for(let x = range.x_low; x <= range.x_high; x++){

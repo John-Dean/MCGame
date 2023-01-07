@@ -18,6 +18,10 @@ class MapLoader {
 		this.chunk_to_models = new ChunkToModels(model_cache);
 	}
 	
+	async get_world_data(){
+		return await this.chunk_data.world.get_level_data();
+	}
+	
 	add_resource_pack(){
 		return this.model_cache.add_resource_pack(...arguments);
 	}
@@ -34,6 +38,7 @@ class MapLoader {
 		
 		console.time("chunk-file-load")
 		let data = await this.chunk_data.get_chunk_data(x, z)
+		console.log(data)
 		this.cached_chunk_data[chunk_id] = data;
 		console.timeEnd("chunk-file-load")
 		
