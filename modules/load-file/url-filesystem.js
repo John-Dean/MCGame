@@ -40,6 +40,7 @@ class URLFileSystem extends FileSystem {
 	}
 	
 	getUrl(path){
+		return "";
 		return [this.root, path].join("/");
 	}
 

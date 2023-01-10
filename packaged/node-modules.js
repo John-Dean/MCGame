@@ -42,3 +42,5 @@ import { CSG } from 'three-csg-ts';
 import { Node as CSGNode } from 'three-csg-ts/lib/esm/Node';
 export { CSG, CSGNode };
 
+import * as ImageInBrowser from 'image-in-browser';
+export { ImageInBrowser };

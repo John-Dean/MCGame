@@ -1,5 +1,5 @@
 import { THREE, OrbitControls } from "/packaged/node-modules.js"
-
+console.log(new THREE.DataTexture())
 console.log("Okay")
 
 import { MapLoader } from "./modules/map-loader/main.js";
@@ -7,6 +7,7 @@ import { MapLoader } from "./modules/map-loader/main.js";
 let map_loader = new MapLoader();
 await map_loader.add_resource_pack("/assets/resource-pack/")
 await map_loader.load_world("/assets/Sample World 2/");
+console.log(map_loader)
 
 console.log(await map_loader.get_world_data())
 
@@ -15,9 +16,9 @@ const width = window.innerWidth;
 const height = window.innerHeight;
 
 let range = {
-	x_low: 0,
+	x_low: -1,
 	x_high: 0,
-	z_low: 0,
+	z_low: -1,
 	z_high: 0
 }
 
@@ -27,8 +28,64 @@ for(let x = range.x_low; x <= range.x_high; x++){
 		scene.add(chunk_models)
 	}
 }
-
-
+/*
+{
+	{
+		let model = await map_loader.get_block_from_blockstate("block/acacia_stairs", { facing: "north", half: "top", shape: "straight" });
+		model.position.x = 0;
+		model.position.z = 1;
+		scene.add(model)
+	}
+	{
+		let model = await map_loader.get_block_from_blockstate("block/acacia_stairs", { facing: "north", half: "top", shape: "outer_left" });
+		model.position.x = 1;
+		model.position.z = 1;
+		scene.add(model)
+	}
+	{
+		let model = await map_loader.get_block_from_blockstate("block/acacia_stairs", { facing: "north", half: "top", shape: "outer_right" });
+		model.position.x = -1;
+		model.position.z = 1;
+		scene.add(model)
+	}
+	{
+		let model = await map_loader.get_block_from_blockstate("block/acacia_stairs", { facing: "east", half: "top", shape: "straight" });
+		model.position.x = -1;
+		model.position.z = 0;
+		scene.add(model)
+	}
+	{
+		let model = await map_loader.get_block_from_blockstate("block/acacia_stairs", { facing: "east", half: "top", shape: "outer_right" });
+		model.position.x = -1;
+		model.position.z = -1;
+		scene.add(model)
+	}
+	{
+		let model = await map_loader.get_block_from_blockstate("block/acacia_stairs", { facing: "west", half: "top", shape: "straight" });
+		model.position.x = 1;
+		model.position.z = 0;
+		scene.add(model)
+	}
+	{
+		let model = await map_loader.get_block_from_blockstate("block/acacia_stairs", { facing: "west", half: "top", shape: "outer_left" });
+		model.position.x = 1;
+		model.position.z = -1;
+		scene.add(model)
+	}
+	{
+		let model = await map_loader.get_block_from_blockstate("block/acacia_stairs", { facing: "south", half: "top", shape: "straight" });
+		model.position.x = 0;
+		model.position.z = -1;
+		scene.add(model)
+	}
+	// {
+	// 	let model = await map_loader.get_block_from_blockstate("block/acacia_planks");
+	// 	model.position.x = 0;
+	// 	model.position.z = 0;
+	// 	scene.add(model)
+	// }
+}
+*/
 
 // const camera = new THREE.PerspectiveCamera(75, width / height, 0.1, 1000);
 const camera = new THREE.OrthographicCamera(width / -2, width / 2, height / 2, height / -2, 1, 1000);

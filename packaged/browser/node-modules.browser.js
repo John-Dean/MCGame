@@ -13645,6 +13645,843 @@ process.chdir = function (dir) {
 process.umask = function() { return 0; };
 
 
+/***/ }),
+
+/***/ 322:
+/***/ ((module) => {
+
+
+
+var UZIP = {};
+if(true) module.exports = UZIP;
+
+
+UZIP["parse"] = function(buf, onlyNames)	// ArrayBuffer
+{
+	var rUs = UZIP.bin.readUshort, rUi = UZIP.bin.readUint, o = 0, out = {};
+	var data = new Uint8Array(buf);
+	var eocd = data.length-4;
+	
+	while(rUi(data, eocd)!=0x06054b50) eocd--;
+	
+	var o = eocd;
+	o+=4;	// sign  = 0x06054b50
+	o+=4;  // disks = 0;
+	var cnu = rUs(data, o);  o+=2;
+	var cnt = rUs(data, o);  o+=2;
+			
+	var csize = rUi(data, o);  o+=4;
+	var coffs = rUi(data, o);  o+=4;
+	
+	o = coffs;
+	for(var i=0; i<cnu; i++)
+	{
+		var sign = rUi(data, o);  o+=4;
+		o += 4;  // versions;
+		o += 4;  // flag + compr
+		o += 4;  // time
+		
+		var crc32 = rUi(data, o);  o+=4;
+		var csize = rUi(data, o);  o+=4;
+		var usize = rUi(data, o);  o+=4;
+		
+		var nl = rUs(data, o), el = rUs(data, o+2), cl = rUs(data, o+4);  o += 6;  // name, extra, comment
+		o += 8;  // disk, attribs
+		
+		var roff = rUi(data, o);  o+=4;
+		o += nl + el + cl;
+		
+		UZIP._readLocal(data, roff, out, csize, usize, onlyNames);
+	}
+	//console.log(out);
+	return out;
+}
+
+UZIP._readLocal = function(data, o, out, csize, usize, onlyNames)
+{
+	var rUs = UZIP.bin.readUshort, rUi = UZIP.bin.readUint;
+	var sign  = rUi(data, o);  o+=4;
+	var ver   = rUs(data, o);  o+=2;
+	var gpflg = rUs(data, o);  o+=2;
+	//if((gpflg&8)!=0) throw "unknown sizes";
+	var cmpr  = rUs(data, o);  o+=2;
+	
+	var time  = rUi(data, o);  o+=4;
+	
+	var crc32 = rUi(data, o);  o+=4;
+	//var csize = rUi(data, o);  o+=4;
+	//var usize = rUi(data, o);  o+=4;
+	o+=8;
+		
+	var nlen  = rUs(data, o);  o+=2;
+	var elen  = rUs(data, o);  o+=2;
+		
+	var name =  UZIP.bin.readUTF8(data, o, nlen);  o+=nlen;  //console.log(name);
+	o += elen;
+			
+	//console.log(sign.toString(16), ver, gpflg, cmpr, crc32.toString(16), "csize, usize", csize, usize, nlen, elen, name, o);
+	if(onlyNames) {  out[name]={size:usize, csize:csize};  return;  }   
+	var file = new Uint8Array(data.buffer, o);
+	if(false) {}
+	else if(cmpr==0) out[name] = new Uint8Array(file.buffer.slice(o, o+csize));
+	else if(cmpr==8) {
+		var buf = new Uint8Array(usize);  UZIP.inflateRaw(file, buf);
+		/*var nbuf = pako["inflateRaw"](file);
+		if(usize>8514000) {
+			//console.log(PUtils.readASCII(buf , 8514500, 500));
+			//console.log(PUtils.readASCII(nbuf, 8514500, 500));
+		}
+		for(var i=0; i<buf.length; i++) if(buf[i]!=nbuf[i]) {  console.log(buf.length, nbuf.length, usize, i);  throw "e";  }
+		*/
+		out[name] = buf;
+	}
+	else throw "unknown compression method: "+cmpr;
+}
+
+UZIP.inflateRaw = function(file, buf) {  return UZIP.F.inflate(file, buf);  }
+UZIP.inflate    = function(file, buf) { 
+	var CMF = file[0], FLG = file[1];
+	var CM = (CMF&15), CINFO = (CMF>>>4);
+	//console.log(CM, CINFO,CMF,FLG);
+	return UZIP.inflateRaw(new Uint8Array(file.buffer, file.byteOffset+2, file.length-6), buf);  
+}
+UZIP.deflate    = function(data, opts/*, buf, off*/) {
+	if(opts==null) opts={level:6};
+	var off=0, buf=new Uint8Array(50+Math.floor(data.length*1.1));
+	buf[off]=120;  buf[off+1]=156;  off+=2;
+	off = UZIP.F.deflateRaw(data, buf, off, opts.level);
+	var crc = UZIP.adler(data, 0, data.length);
+	buf[off+0]=((crc>>>24)&255); 
+	buf[off+1]=((crc>>>16)&255); 
+	buf[off+2]=((crc>>> 8)&255); 
+	buf[off+3]=((crc>>> 0)&255); 	
+	return new Uint8Array(buf.buffer, 0, off+4);
+}
+UZIP.deflateRaw = function(data, opts) {
+	if(opts==null) opts={level:6};
+	var buf=new Uint8Array(50+Math.floor(data.length*1.1));
+	var off = UZIP.F.deflateRaw(data, buf, off, opts.level);
+	return new Uint8Array(buf.buffer, 0, off);
+}
+
+
+UZIP.encode = function(obj, noCmpr) {
+	if(noCmpr==null) noCmpr=false;
+	var tot = 0, wUi = UZIP.bin.writeUint, wUs = UZIP.bin.writeUshort;
+	var zpd = {};
+	for(var p in obj) {  var cpr = !UZIP._noNeed(p) && !noCmpr, buf = obj[p], crc = UZIP.crc.crc(buf,0,buf.length); 
+		zpd[p] = {  cpr:cpr, usize:buf.length, crc:crc, file: (cpr ? UZIP.deflateRaw(buf) : buf)  };  }
+	
+	for(var p in zpd) tot += zpd[p].file.length + 30 + 46 + 2*UZIP.bin.sizeUTF8(p);
+	tot +=  22;
+	
+	var data = new Uint8Array(tot), o = 0;
+	var fof = []
+	
+	for(var p in zpd) {
+		var file = zpd[p];  fof.push(o);
+		o = UZIP._writeHeader(data, o, p, file, 0);
+	}
+	var i=0, ioff = o;
+	for(var p in zpd) {
+		var file = zpd[p];  fof.push(o);
+		o = UZIP._writeHeader(data, o, p, file, 1, fof[i++]);		
+	}
+	var csize = o-ioff;
+	
+	wUi(data, o, 0x06054b50);  o+=4;
+	o += 4;  // disks
+	wUs(data, o, i);  o += 2;
+	wUs(data, o, i);  o += 2;	// number of c d records
+	wUi(data, o, csize);  o += 4;
+	wUi(data, o, ioff );  o += 4;
+	o += 2;
+	return data.buffer;
+}
+// no need to compress .PNG, .ZIP, .JPEG ....
+UZIP._noNeed = function(fn) {  var ext = fn.split(".").pop().toLowerCase();  return "png,jpg,jpeg,zip".indexOf(ext)!=-1;  }
+
+UZIP._writeHeader = function(data, o, p, obj, t, roff)
+{
+	var wUi = UZIP.bin.writeUint, wUs = UZIP.bin.writeUshort;
+	var file = obj.file;
+	
+	wUi(data, o, t==0 ? 0x04034b50 : 0x02014b50);  o+=4; // sign
+	if(t==1) o+=2;  // ver made by
+	wUs(data, o, 20);  o+=2;	// ver
+	wUs(data, o,  0);  o+=2;    // gflip
+	wUs(data, o,  obj.cpr?8:0);  o+=2;	// cmpr
+		
+	wUi(data, o,  0);  o+=4;	// time		
+	wUi(data, o, obj.crc);  o+=4;	// crc32
+	wUi(data, o, file.length);  o+=4;	// csize
+	wUi(data, o, obj.usize);  o+=4;	// usize
+		
+	wUs(data, o, UZIP.bin.sizeUTF8(p));  o+=2;	// nlen
+	wUs(data, o, 0);  o+=2;	// elen
+	
+	if(t==1) {
+		o += 2;  // comment length
+		o += 2;  // disk number
+		o += 6;  // attributes
+		wUi(data, o, roff);  o+=4;	// usize
+	}
+	var nlen = UZIP.bin.writeUTF8(data, o, p);  o+= nlen;	
+	if(t==0) {  data.set(file, o);  o += file.length;  }
+	return o;
+}
+
+
+
+
+
+UZIP.crc = {
+	table : ( function() {
+	   var tab = new Uint32Array(256);
+	   for (var n=0; n<256; n++) {
+			var c = n;
+			for (var k=0; k<8; k++) {
+				if (c & 1)  c = 0xedb88320 ^ (c >>> 1);
+				else        c = c >>> 1;
+			}
+			tab[n] = c;  }    
+		return tab;  })(),
+	update : function(c, buf, off, len) {
+		for (var i=0; i<len; i++)  c = UZIP.crc.table[(c ^ buf[off+i]) & 0xff] ^ (c >>> 8);
+		return c;
+	},
+	crc : function(b,o,l)  {  return UZIP.crc.update(0xffffffff,b,o,l) ^ 0xffffffff;  }
+}
+UZIP.adler = function(data,o,len) {
+	var a = 1, b = 0;
+	var off = o, end=o+len;
+	while(off<end) {
+		var eend = Math.min(off+5552, end);
+		while(off<eend) {
+			a += data[off++];
+			b += a;
+		}
+		a=a%65521;
+		b=b%65521;
+	}
+    return (b << 16) | a;
+}
+
+UZIP.bin = {
+	readUshort : function(buff,p)  {  return (buff[p]) | (buff[p+1]<<8);  },
+	writeUshort: function(buff,p,n){  buff[p] = (n)&255;  buff[p+1] = (n>>8)&255;  },
+	readUint   : function(buff,p)  {  return (buff[p+3]*(256*256*256)) + ((buff[p+2]<<16) | (buff[p+1]<< 8) | buff[p]);  },
+	writeUint  : function(buff,p,n){  buff[p]=n&255;  buff[p+1]=(n>>8)&255;  buff[p+2]=(n>>16)&255;  buff[p+3]=(n>>24)&255;  },
+	readASCII  : function(buff,p,l){  var s = "";  for(var i=0; i<l; i++) s += String.fromCharCode(buff[p+i]);  return s;    },
+	writeASCII : function(data,p,s){  for(var i=0; i<s.length; i++) data[p+i] = s.charCodeAt(i);  },
+	pad : function(n) { return n.length < 2 ? "0" + n : n; },
+	readUTF8 : function(buff, p, l) {
+		var s = "", ns;
+		for(var i=0; i<l; i++) s += "%" + UZIP.bin.pad(buff[p+i].toString(16));
+		try {  ns = decodeURIComponent(s); }
+		catch(e) {  return UZIP.bin.readASCII(buff, p, l);  }
+		return  ns;
+	},
+	writeUTF8 : function(buff, p, str) {
+		var strl = str.length, i=0;
+		for(var ci=0; ci<strl; ci++)
+		{
+			var code = str.charCodeAt(ci);
+			if     ((code&(0xffffffff-(1<< 7)+1))==0) {  buff[p+i] = (     code     );  i++;  }
+			else if((code&(0xffffffff-(1<<11)+1))==0) {  buff[p+i] = (192|(code>> 6));  buff[p+i+1] = (128|((code>> 0)&63));  i+=2;  }
+			else if((code&(0xffffffff-(1<<16)+1))==0) {  buff[p+i] = (224|(code>>12));  buff[p+i+1] = (128|((code>> 6)&63));  buff[p+i+2] = (128|((code>>0)&63));  i+=3;  }
+			else if((code&(0xffffffff-(1<<21)+1))==0) {  buff[p+i] = (240|(code>>18));  buff[p+i+1] = (128|((code>>12)&63));  buff[p+i+2] = (128|((code>>6)&63));  buff[p+i+3] = (128|((code>>0)&63)); i+=4;  }
+			else throw "e";
+		}
+		return i;
+	},
+	sizeUTF8 : function(str) {
+		var strl = str.length, i=0;
+		for(var ci=0; ci<strl; ci++)
+		{
+			var code = str.charCodeAt(ci);
+			if     ((code&(0xffffffff-(1<< 7)+1))==0) {  i++ ;  }
+			else if((code&(0xffffffff-(1<<11)+1))==0) {  i+=2;  }
+			else if((code&(0xffffffff-(1<<16)+1))==0) {  i+=3;  }
+			else if((code&(0xffffffff-(1<<21)+1))==0) {  i+=4;  }
+			else throw "e";
+		}
+		return i;
+	}
+}
+
+
+
+
+
+UZIP.F = {};
+
+UZIP.F.deflateRaw = function(data, out, opos, lvl) {	
+	var opts = [
+	/*
+		 ush good_length; /* reduce lazy search above this match length 
+		 ush max_lazy;    /* do not perform lazy search above this match length 
+         ush nice_length; /* quit search above this match length 
+	*/
+	/*      good lazy nice chain */
+	/* 0 */ [ 0,   0,   0,    0,0],  /* store only */
+	/* 1 */ [ 4,   4,   8,    4,0], /* max speed, no lazy matches */
+	/* 2 */ [ 4,   5,  16,    8,0],
+	/* 3 */ [ 4,   6,  16,   16,0],
+
+	/* 4 */ [ 4,  10,  16,   32,0],  /* lazy matches */
+	/* 5 */ [ 8,  16,  32,   32,0],
+	/* 6 */ [ 8,  16, 128,  128,0],
+	/* 7 */ [ 8,  32, 128,  256,0],
+	/* 8 */ [32, 128, 258, 1024,1],
+	/* 9 */ [32, 258, 258, 4096,1]]; /* max compression */
+	
+	var opt = opts[lvl];
+	
+	
+	var U = UZIP.F.U, goodIndex = UZIP.F._goodIndex, hash = UZIP.F._hash, putsE = UZIP.F._putsE;
+	var i = 0, pos = opos<<3, cvrd = 0, dlen = data.length;
+	
+	if(lvl==0) {
+		while(i<dlen) {   var len = Math.min(0xffff, dlen-i);
+			putsE(out, pos, (i+len==dlen ? 1 : 0));  pos = UZIP.F._copyExact(data, i, len, out, pos+8);  i += len;  }
+		return pos>>>3;
+	}
+
+	var lits = U.lits, strt=U.strt, prev=U.prev, li=0, lc=0, bs=0, ebits=0, c=0, nc=0;  // last_item, literal_count, block_start
+	if(dlen>2) {  nc=UZIP.F._hash(data,0);  strt[nc]=0;  }
+	var nmch=0,nmci=0;
+	
+	for(i=0; i<dlen; i++)  {
+		c = nc;
+		//*
+		if(i+1<dlen-2) {
+			nc = UZIP.F._hash(data, i+1);
+			var ii = ((i+1)&0x7fff);
+			prev[ii]=strt[nc];
+			strt[nc]=ii;
+		} //*/
+		if(cvrd<=i) {
+			if((li>14000 || lc>26697) && (dlen-i)>100) {
+				if(cvrd<i) {  lits[li]=i-cvrd;  li+=2;  cvrd=i;  }
+				pos = UZIP.F._writeBlock(((i==dlen-1) || (cvrd==dlen))?1:0, lits, li, ebits, data,bs,i-bs, out, pos);  li=lc=ebits=0;  bs=i;
+			}
+			
+			var mch = 0;
+			//if(nmci==i) mch= nmch;  else 
+			if(i<dlen-2) mch = UZIP.F._bestMatch(data, i, prev, c, Math.min(opt[2],dlen-i), opt[3]);
+			/*
+			if(mch!=0 && opt[4]==1 && (mch>>>16)<opt[1] && i+1<dlen-2) {
+				nmch = UZIP.F._bestMatch(data, i+1, prev, nc, opt[2], opt[3]);  nmci=i+1;
+				//var mch2 = UZIP.F._bestMatch(data, i+2, prev, nnc);  //nmci=i+1;
+				if((nmch>>>16)>(mch>>>16)) mch=0;
+			}//*/
+			var len = mch>>>16, dst = mch&0xffff;  //if(i-dst<0) throw "e";
+			if(mch!=0) { 
+				var len = mch>>>16, dst = mch&0xffff;  //if(i-dst<0) throw "e";
+				var lgi = goodIndex(len, U.of0);  U.lhst[257+lgi]++; 
+				var dgi = goodIndex(dst, U.df0);  U.dhst[    dgi]++;  ebits += U.exb[lgi] + U.dxb[dgi]; 
+				lits[li] = (len<<23)|(i-cvrd);  lits[li+1] = (dst<<16)|(lgi<<8)|dgi;  li+=2;
+				cvrd = i + len;  
+			}
+			else {	U.lhst[data[i]]++;  }
+			lc++;
+		}
+	}
+	if(bs!=i || data.length==0) {
+		if(cvrd<i) {  lits[li]=i-cvrd;  li+=2;  cvrd=i;  }
+		pos = UZIP.F._writeBlock(1, lits, li, ebits, data,bs,i-bs, out, pos);  li=0;  lc=0;  li=lc=ebits=0;  bs=i;
+	}
+	while((pos&7)!=0) pos++;
+	return pos>>>3;
+}
+UZIP.F._bestMatch = function(data, i, prev, c, nice, chain) {
+	var ci = (i&0x7fff), pi=prev[ci];  
+	//console.log("----", i);
+	var dif = ((ci-pi + (1<<15)) & 0x7fff);  if(pi==ci || c!=UZIP.F._hash(data,i-dif)) return 0;
+	var tl=0, td=0;  // top length, top distance
+	var dlim = Math.min(0x7fff, i);
+	while(dif<=dlim && --chain!=0 && pi!=ci /*&& c==UZIP.F._hash(data,i-dif)*/) {
+		if(tl==0 || (data[i+tl]==data[i+tl-dif])) {
+			var cl = UZIP.F._howLong(data, i, dif);
+			if(cl>tl) {  
+				tl=cl;  td=dif;  if(tl>=nice) break;    //* 
+				if(dif+2<cl) cl = dif+2;
+				var maxd = 0; // pi does not point to the start of the word
+				for(var j=0; j<cl-2; j++) {
+					var ei =  (i-dif+j+ (1<<15)) & 0x7fff;
+					var li = prev[ei];
+					var curd = (ei-li + (1<<15)) & 0x7fff;
+					if(curd>maxd) {  maxd=curd;  pi = ei; }
+				}  //*/
+			}
+		}
+		
+		ci=pi;  pi = prev[ci];
+		dif += ((ci-pi + (1<<15)) & 0x7fff);
+	}
+	return (tl<<16)|td;
+}
+UZIP.F._howLong = function(data, i, dif) {
+	if(data[i]!=data[i-dif] || data[i+1]!=data[i+1-dif] || data[i+2]!=data[i+2-dif]) return 0;
+	var oi=i, l = Math.min(data.length, i+258);  i+=3;
+	//while(i+4<l && data[i]==data[i-dif] && data[i+1]==data[i+1-dif] && data[i+2]==data[i+2-dif] && data[i+3]==data[i+3-dif]) i+=4;
+	while(i<l && data[i]==data[i-dif]) i++;
+	return i-oi;
+}
+UZIP.F._hash = function(data, i) {
+	return (((data[i]<<8) | data[i+1])+(data[i+2]<<4))&0xffff;
+	//var hash_shift = 0, hash_mask = 255;
+	//var h = data[i+1] % 251;
+	//h = (((h << 8) + data[i+2]) % 251);
+	//h = (((h << 8) + data[i+2]) % 251);
+	//h = ((h<<hash_shift) ^ (c) ) & hash_mask;
+	//return h | (data[i]<<8);
+	//return (data[i] | (data[i+1]<<8));
+}
+//UZIP.___toth = 0;
+UZIP.saved = 0;
+UZIP.F._writeBlock = function(BFINAL, lits, li, ebits, data,o0,l0, out, pos) {
+	var U = UZIP.F.U, putsF = UZIP.F._putsF, putsE = UZIP.F._putsE;
+	
+	//*
+	var T, ML, MD, MH, numl, numd, numh, lset, dset;  U.lhst[256]++;
+	T = UZIP.F.getTrees(); ML=T[0]; MD=T[1]; MH=T[2]; numl=T[3]; numd=T[4]; numh=T[5]; lset=T[6]; dset=T[7];
+	
+	var cstSize = (((pos+3)&7)==0 ? 0 : 8-((pos+3)&7)) + 32 + (l0<<3);
+	var fxdSize = ebits + UZIP.F.contSize(U.fltree, U.lhst) + UZIP.F.contSize(U.fdtree, U.dhst);
+	var dynSize = ebits + UZIP.F.contSize(U.ltree , U.lhst) + UZIP.F.contSize(U.dtree , U.dhst);
+	dynSize    += 14 + 3*numh + UZIP.F.contSize(U.itree, U.ihst) + (U.ihst[16]*2 + U.ihst[17]*3 + U.ihst[18]*7);
+	
+	for(var j=0; j<286; j++) U.lhst[j]=0;   for(var j=0; j<30; j++) U.dhst[j]=0;   for(var j=0; j<19; j++) U.ihst[j]=0;
+	//*/
+	var BTYPE = (cstSize<fxdSize && cstSize<dynSize) ? 0 : ( fxdSize<dynSize ? 1 : 2 );
+	putsF(out, pos, BFINAL);  putsF(out, pos+1, BTYPE);  pos+=3;
+	
+	var opos = pos;
+	if(BTYPE==0) {
+		while((pos&7)!=0) pos++;
+		pos = UZIP.F._copyExact(data, o0, l0, out, pos);
+	}
+	else {
+		var ltree, dtree;
+		if(BTYPE==1) {  ltree=U.fltree;  dtree=U.fdtree;  }
+		if(BTYPE==2) {	
+			UZIP.F.makeCodes(U.ltree, ML);  UZIP.F.revCodes(U.ltree, ML);
+			UZIP.F.makeCodes(U.dtree, MD);  UZIP.F.revCodes(U.dtree, MD);
+			UZIP.F.makeCodes(U.itree, MH);  UZIP.F.revCodes(U.itree, MH);
+			
+			ltree = U.ltree;  dtree = U.dtree;
+			
+			putsE(out, pos,numl-257);  pos+=5;  // 286
+			putsE(out, pos,numd-  1);  pos+=5;  // 30
+			putsE(out, pos,numh-  4);  pos+=4;  // 19
+			
+			for(var i=0; i<numh; i++) putsE(out, pos+i*3, U.itree[(U.ordr[i]<<1)+1]);   pos+=3* numh;
+			pos = UZIP.F._codeTiny(lset, U.itree, out, pos);
+			pos = UZIP.F._codeTiny(dset, U.itree, out, pos);
+		}
+		
+		var off=o0;
+		for(var si=0; si<li; si+=2) {
+			var qb=lits[si], len=(qb>>>23), end = off+(qb&((1<<23)-1));
+			while(off<end) pos = UZIP.F._writeLit(data[off++], ltree, out, pos);
+			
+			if(len!=0) {
+				var qc = lits[si+1], dst=(qc>>16), lgi=(qc>>8)&255, dgi=(qc&255);
+				pos = UZIP.F._writeLit(257+lgi, ltree, out, pos);
+				putsE(out, pos, len-U.of0[lgi]);  pos+=U.exb[lgi];
+				
+				pos = UZIP.F._writeLit(dgi, dtree, out, pos);
+				putsF(out, pos, dst-U.df0[dgi]);  pos+=U.dxb[dgi];  off+=len;
+			}
+		}
+		pos = UZIP.F._writeLit(256, ltree, out, pos);
+	}
+	//console.log(pos-opos, fxdSize, dynSize, cstSize);
+	return pos;
+}
+UZIP.F._copyExact = function(data,off,len,out,pos) {
+	var p8 = (pos>>>3);
+	out[p8]=(len);  out[p8+1]=(len>>>8);  out[p8+2]=255-out[p8];  out[p8+3]=255-out[p8+1];  p8+=4;
+	out.set(new Uint8Array(data.buffer, off, len), p8);
+	//for(var i=0; i<len; i++) out[p8+i]=data[off+i];
+	return pos + ((len+4)<<3);
+}
+/*
+	Interesting facts:
+	- decompressed block can have bytes, which do not occur in a Huffman tree (copied from the previous block by reference)
+*/
+
+UZIP.F.getTrees = function() {
+	var U = UZIP.F.U;
+	var ML = UZIP.F._hufTree(U.lhst, U.ltree, 15);
+	var MD = UZIP.F._hufTree(U.dhst, U.dtree, 15);
+	var lset = [], numl = UZIP.F._lenCodes(U.ltree, lset);
+	var dset = [], numd = UZIP.F._lenCodes(U.dtree, dset);
+	for(var i=0; i<lset.length; i+=2) U.ihst[lset[i]]++;
+	for(var i=0; i<dset.length; i+=2) U.ihst[dset[i]]++;
+	var MH = UZIP.F._hufTree(U.ihst, U.itree,  7);
+	var numh = 19;  while(numh>4 && U.itree[(U.ordr[numh-1]<<1)+1]==0) numh--;
+	return [ML, MD, MH, numl, numd, numh, lset, dset];
+}
+UZIP.F.getSecond= function(a) {  var b=[];  for(var i=0; i<a.length; i+=2) b.push  (a[i+1]);  return b;  }
+UZIP.F.nonZero  = function(a) {  var b= "";  for(var i=0; i<a.length; i+=2) if(a[i+1]!=0)b+=(i>>1)+",";  return b;  }
+UZIP.F.contSize = function(tree, hst) {  var s=0;  for(var i=0; i<hst.length; i++) s+= hst[i]*tree[(i<<1)+1];  return s;  }
+UZIP.F._codeTiny = function(set, tree, out, pos) {
+	for(var i=0; i<set.length; i+=2) {
+		var l = set[i], rst = set[i+1];  //console.log(l, pos, tree[(l<<1)+1]);
+		pos = UZIP.F._writeLit(l, tree, out, pos);
+		var rsl = l==16 ? 2 : (l==17 ? 3 : 7);
+		if(l>15) {  UZIP.F._putsE(out, pos, rst, rsl);  pos+=rsl;  }
+	}
+	return pos;
+}
+UZIP.F._lenCodes = function(tree, set) {
+	var len=tree.length;  while(len!=2 && tree[len-1]==0) len-=2;  // when no distances, keep one code with length 0
+	for(var i=0; i<len; i+=2) {
+		var l = tree[i+1], nxt = (i+3<len ? tree[i+3]:-1),  nnxt = (i+5<len ? tree[i+5]:-1),  prv = (i==0 ? -1 : tree[i-1]);
+		if(l==0 && nxt==l && nnxt==l) {
+			var lz = i+5;
+			while(lz+2<len && tree[lz+2]==l) lz+=2;
+			var zc = Math.min((lz+1-i)>>>1, 138);
+			if(zc<11) set.push(17, zc-3);
+			else set.push(18, zc-11);
+			i += zc*2-2;
+		}
+		else if(l==prv && nxt==l && nnxt==l) {
+			var lz = i+5;
+			while(lz+2<len && tree[lz+2]==l) lz+=2;
+			var zc = Math.min((lz+1-i)>>>1, 6);
+			set.push(16, zc-3);
+			i += zc*2-2;
+		}
+		else set.push(l, 0);
+	}
+	return len>>>1;
+}
+UZIP.F._hufTree   = function(hst, tree, MAXL) {
+	var list=[], hl = hst.length, tl=tree.length, i=0;
+	for(i=0; i<tl; i+=2) {  tree[i]=0;  tree[i+1]=0;  }	
+	for(i=0; i<hl; i++) if(hst[i]!=0) list.push({lit:i, f:hst[i]});
+	var end = list.length, l2=list.slice(0);
+	if(end==0) return 0;  // empty histogram (usually for dist)
+	if(end==1) {  var lit=list[0].lit, l2=lit==0?1:0;  tree[(lit<<1)+1]=1;  tree[(l2<<1)+1]=1;  return 1;  }
+	list.sort(function(a,b){return a.f-b.f;});
+	var a=list[0], b=list[1], i0=0, i1=1, i2=2;  list[0]={lit:-1,f:a.f+b.f,l:a,r:b,d:0};
+	while(i1!=end-1) {
+		if(i0!=i1 && (i2==end || list[i0].f<list[i2].f)) {  a=list[i0++];  }  else {  a=list[i2++];  }
+		if(i0!=i1 && (i2==end || list[i0].f<list[i2].f)) {  b=list[i0++];  }  else {  b=list[i2++];  }
+		list[i1++]={lit:-1,f:a.f+b.f, l:a,r:b};
+	}
+	var maxl = UZIP.F.setDepth(list[i1-1], 0);
+	if(maxl>MAXL) {  UZIP.F.restrictDepth(l2, MAXL, maxl);  maxl = MAXL;  }
+	for(i=0; i<end; i++) tree[(l2[i].lit<<1)+1]=l2[i].d;
+	return maxl;
+}
+
+UZIP.F.setDepth  = function(t, d) {
+	if(t.lit!=-1) {  t.d=d;  return d;  }
+	return Math.max( UZIP.F.setDepth(t.l, d+1),  UZIP.F.setDepth(t.r, d+1) );
+}
+
+UZIP.F.restrictDepth = function(dps, MD, maxl) {
+	var i=0, bCost=1<<(maxl-MD), dbt=0;
+	dps.sort(function(a,b){return b.d==a.d ? a.f-b.f : b.d-a.d;});
+	
+	for(i=0; i<dps.length; i++) if(dps[i].d>MD) {  var od=dps[i].d;  dps[i].d=MD;  dbt+=bCost-(1<<(maxl-od));  }  else break;
+	dbt = dbt>>>(maxl-MD);
+	while(dbt>0) {  var od=dps[i].d;  if(od<MD) {  dps[i].d++;  dbt-=(1<<(MD-od-1));  }  else  i++;  }
+	for(; i>=0; i--) if(dps[i].d==MD && dbt<0) {  dps[i].d--;  dbt++;  }  if(dbt!=0) console.log("debt left");
+}
+
+UZIP.F._goodIndex = function(v, arr) {
+	var i=0;  if(arr[i|16]<=v) i|=16;  if(arr[i|8]<=v) i|=8;  if(arr[i|4]<=v) i|=4;  if(arr[i|2]<=v) i|=2;  if(arr[i|1]<=v) i|=1;  return i;
+}
+UZIP.F._writeLit = function(ch, ltree, out, pos) {
+	UZIP.F._putsF(out, pos, ltree[ch<<1]);
+	return pos+ltree[(ch<<1)+1];
+}
+
+
+
+
+
+
+
+
+UZIP.F.inflate = function(data, buf) {
+	var u8=Uint8Array;
+	if(data[0]==3 && data[1]==0) return (buf ? buf : new u8(0));
+	var F=UZIP.F, bitsF = F._bitsF, bitsE = F._bitsE, decodeTiny = F._decodeTiny, makeCodes = F.makeCodes, codes2map=F.codes2map, get17 = F._get17;
+	var U = F.U;
+	
+	var noBuf = (buf==null);
+	if(noBuf) buf = new u8((data.length>>>2)<<3);
+	
+	var BFINAL=0, BTYPE=0, HLIT=0, HDIST=0, HCLEN=0, ML=0, MD=0; 	
+	var off = 0, pos = 0;
+	var lmap, dmap;
+	
+	while(BFINAL==0) {		
+		BFINAL = bitsF(data, pos  , 1);
+		BTYPE  = bitsF(data, pos+1, 2);  pos+=3;
+		//console.log(BFINAL, BTYPE);
+		
+		if(BTYPE==0) {
+			if((pos&7)!=0) pos+=8-(pos&7);
+			var p8 = (pos>>>3)+4, len = data[p8-4]|(data[p8-3]<<8);  //console.log(len);//bitsF(data, pos, 16), 
+			if(noBuf) buf=UZIP.F._check(buf, off+len);
+			buf.set(new u8(data.buffer, data.byteOffset+p8, len), off);
+			//for(var i=0; i<len; i++) buf[off+i] = data[p8+i];
+			//for(var i=0; i<len; i++) if(buf[off+i] != data[p8+i]) throw "e";
+			pos = ((p8+len)<<3);  off+=len;  continue;
+		}
+		if(noBuf) buf=UZIP.F._check(buf, off+(1<<17));  // really not enough in many cases (but PNG and ZIP provide buffer in advance)
+		if(BTYPE==1) {  lmap = U.flmap;  dmap = U.fdmap;  ML = (1<<9)-1;  MD = (1<<5)-1;   }
+		if(BTYPE==2) {
+			HLIT  = bitsE(data, pos   , 5)+257;  
+			HDIST = bitsE(data, pos+ 5, 5)+  1;  
+			HCLEN = bitsE(data, pos+10, 4)+  4;  pos+=14;
+			
+			var ppos = pos;
+			for(var i=0; i<38; i+=2) {  U.itree[i]=0;  U.itree[i+1]=0;  }
+			var tl = 1;
+			for(var i=0; i<HCLEN; i++) {  var l=bitsE(data, pos+i*3, 3);  U.itree[(U.ordr[i]<<1)+1] = l;  if(l>tl)tl=l;  }     pos+=3*HCLEN;  //console.log(itree);
+			makeCodes(U.itree, tl);
+			codes2map(U.itree, tl, U.imap);
+			
+			lmap = U.lmap;  dmap = U.dmap;
+			
+			pos = decodeTiny(U.imap, (1<<tl)-1, HLIT+HDIST, data, pos, U.ttree);
+			var mx0 = F._copyOut(U.ttree,    0, HLIT , U.ltree);  ML = (1<<mx0)-1;
+			var mx1 = F._copyOut(U.ttree, HLIT, HDIST, U.dtree);  MD = (1<<mx1)-1;
+			
+			//var ml = decodeTiny(U.imap, (1<<tl)-1, HLIT , data, pos, U.ltree); ML = (1<<(ml>>>24))-1;  pos+=(ml&0xffffff);
+			makeCodes(U.ltree, mx0);
+			codes2map(U.ltree, mx0, lmap);
+			
+			//var md = decodeTiny(U.imap, (1<<tl)-1, HDIST, data, pos, U.dtree); MD = (1<<(md>>>24))-1;  pos+=(md&0xffffff);
+			makeCodes(U.dtree, mx1);
+			codes2map(U.dtree, mx1, dmap);
+		}
+		//var ooff=off, opos=pos;
+		while(true) {
+			var code = lmap[get17(data, pos) & ML];  pos += code&15;
+			var lit = code>>>4;  //U.lhst[lit]++;  
+			if((lit>>>8)==0) {  buf[off++] = lit;  }
+			else if(lit==256) {  break;  }
+			else {
+				var end = off+lit-254;
+				if(lit>264) { var ebs = U.ldef[lit-257];  end = off + (ebs>>>3) + bitsE(data, pos, ebs&7);  pos += ebs&7;  }
+				//UZIP.F.dst[end-off]++;
+				
+				var dcode = dmap[get17(data, pos) & MD];  pos += dcode&15;
+				var dlit = dcode>>>4;
+				var dbs = U.ddef[dlit], dst = (dbs>>>4) + bitsF(data, pos, dbs&15);  pos += dbs&15;
+				
+				//var o0 = off-dst, stp = Math.min(end-off, dst);
+				//if(stp>20) while(off<end) {  buf.copyWithin(off, o0, o0+stp);  off+=stp;  }  else
+				//if(end-dst<=off) buf.copyWithin(off, off-dst, end-dst);  else
+				//if(dst==1) buf.fill(buf[off-1], off, end);  else
+				if(noBuf) buf=UZIP.F._check(buf, off+(1<<17));
+				while(off<end) {  buf[off]=buf[off++-dst];    buf[off]=buf[off++-dst];  buf[off]=buf[off++-dst];  buf[off]=buf[off++-dst];  }   
+				off=end;
+				//while(off!=end) {  buf[off]=buf[off++-dst];  }
+			}
+		}
+		//console.log(off-ooff, (pos-opos)>>>3);
+	}
+	//console.log(UZIP.F.dst);
+	//console.log(tlen, dlen, off-tlen+tcnt);
+	return buf.length==off ? buf : buf.slice(0,off);
+}
+UZIP.F._check=function(buf, len) {
+	var bl=buf.length;  if(len<=bl) return buf;
+	var nbuf = new Uint8Array(Math.max(bl<<1,len));  nbuf.set(buf,0);
+	//for(var i=0; i<bl; i+=4) {  nbuf[i]=buf[i];  nbuf[i+1]=buf[i+1];  nbuf[i+2]=buf[i+2];  nbuf[i+3]=buf[i+3];  }
+	return nbuf;
+}
+
+UZIP.F._decodeTiny = function(lmap, LL, len, data, pos, tree) {
+	var bitsE = UZIP.F._bitsE, get17 = UZIP.F._get17;
+	var i = 0;
+	while(i<len) {
+		var code = lmap[get17(data, pos)&LL];  pos+=code&15;
+		var lit = code>>>4; 
+		if(lit<=15) {  tree[i]=lit;  i++;  }
+		else {
+			var ll = 0, n = 0;
+			if(lit==16) {
+				n = (3  + bitsE(data, pos, 2));  pos += 2;  ll = tree[i-1];
+			}
+			else if(lit==17) {
+				n = (3  + bitsE(data, pos, 3));  pos += 3;
+			}
+			else if(lit==18) {
+				n = (11 + bitsE(data, pos, 7));  pos += 7;
+			}
+			var ni = i+n;
+			while(i<ni) {  tree[i]=ll;  i++; }
+		}
+	}
+	return pos;
+}
+UZIP.F._copyOut = function(src, off, len, tree) {
+	var mx=0, i=0, tl=tree.length>>>1;
+	while(i<len) {  var v=src[i+off];  tree[(i<<1)]=0;  tree[(i<<1)+1]=v;  if(v>mx)mx=v;  i++;  }
+	while(i<tl ) {  tree[(i<<1)]=0;  tree[(i<<1)+1]=0;  i++;  }
+	return mx;
+}
+
+UZIP.F.makeCodes = function(tree, MAX_BITS) {  // code, length
+	var U = UZIP.F.U;
+	var max_code = tree.length;
+	var code, bits, n, i, len;
+	
+	var bl_count = U.bl_count;  for(var i=0; i<=MAX_BITS; i++) bl_count[i]=0;
+	for(i=1; i<max_code; i+=2) bl_count[tree[i]]++;
+	
+	var next_code = U.next_code;	// smallest code for each length
+	
+	code = 0;
+	bl_count[0] = 0;
+	for (bits = 1; bits <= MAX_BITS; bits++) {
+		code = (code + bl_count[bits-1]) << 1;
+		next_code[bits] = code;
+	}
+	
+	for (n = 0; n < max_code; n+=2) {
+		len = tree[n+1];
+		if (len != 0) {
+			tree[n] = next_code[len];
+			next_code[len]++;
+		}
+	}
+}
+UZIP.F.codes2map = function(tree, MAX_BITS, map) {
+	var max_code = tree.length;
+	var U=UZIP.F.U, r15 = U.rev15;
+	for(var i=0; i<max_code; i+=2) if(tree[i+1]!=0)  {
+		var lit = i>>1;
+		var cl = tree[i+1], val = (lit<<4)|cl; // :  (0x8000 | (U.of0[lit-257]<<7) | (U.exb[lit-257]<<4) | cl);
+		var rest = (MAX_BITS-cl), i0 = tree[i]<<rest, i1 = i0 + (1<<rest);
+		//tree[i]=r15[i0]>>>(15-MAX_BITS);
+		while(i0!=i1) {
+			var p0 = r15[i0]>>>(15-MAX_BITS);
+			map[p0]=val;  i0++;
+		}
+	}
+}
+UZIP.F.revCodes = function(tree, MAX_BITS) {
+	var r15 = UZIP.F.U.rev15, imb = 15-MAX_BITS;
+	for(var i=0; i<tree.length; i+=2) {  var i0 = (tree[i]<<(MAX_BITS-tree[i+1]));  tree[i] = r15[i0]>>>imb;  }
+}
+
+// used only in deflate
+UZIP.F._putsE= function(dt, pos, val   ) {  val = val<<(pos&7);  var o=(pos>>>3);  dt[o]|=val;  dt[o+1]|=(val>>>8);                        }
+UZIP.F._putsF= function(dt, pos, val   ) {  val = val<<(pos&7);  var o=(pos>>>3);  dt[o]|=val;  dt[o+1]|=(val>>>8);  dt[o+2]|=(val>>>16);  }
+
+UZIP.F._bitsE= function(dt, pos, length) {  return ((dt[pos>>>3] | (dt[(pos>>>3)+1]<<8)                        )>>>(pos&7))&((1<<length)-1);  }
+UZIP.F._bitsF= function(dt, pos, length) {  return ((dt[pos>>>3] | (dt[(pos>>>3)+1]<<8) | (dt[(pos>>>3)+2]<<16))>>>(pos&7))&((1<<length)-1);  }
+/*
+UZIP.F._get9 = function(dt, pos) {
+	return ((dt[pos>>>3] | (dt[(pos>>>3)+1]<<8))>>>(pos&7))&511;
+} */
+UZIP.F._get17= function(dt, pos) {	// return at least 17 meaningful bytes
+	return (dt[pos>>>3] | (dt[(pos>>>3)+1]<<8) | (dt[(pos>>>3)+2]<<16) )>>>(pos&7);
+}
+UZIP.F._get25= function(dt, pos) {	// return at least 17 meaningful bytes
+	return (dt[pos>>>3] | (dt[(pos>>>3)+1]<<8) | (dt[(pos>>>3)+2]<<16) | (dt[(pos>>>3)+3]<<24) )>>>(pos&7);
+}
+UZIP.F.U = function(){
+	var u16=Uint16Array, u32=Uint32Array;
+	return {
+		next_code : new u16(16),
+		bl_count  : new u16(16),
+		ordr : [ 16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15 ],
+		of0  : [3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,35,43,51,59,67,83,99,115,131,163,195,227,258,999,999,999],
+		exb  : [0,0,0,0,0,0,0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4,  4,  5,  5,  5,  5,  0,  0,  0,  0],
+		ldef : new u16(32),
+		df0  : [1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,193,257,385,513,769,1025,1537,2049,3073,4097,6145,8193,12289,16385,24577, 65535, 65535],
+		dxb  : [0,0,0,0,1,1,2, 2, 3, 3, 4, 4, 5, 5,  6,  6,  7,  7,  8,  8,   9,   9,  10,  10,  11,  11,  12,   12,   13,   13,     0,     0],
+		ddef : new u32(32),
+		flmap: new u16(  512),  fltree: [],
+		fdmap: new u16(   32),  fdtree: [],
+		lmap : new u16(32768),  ltree : [],  ttree:[],
+		dmap : new u16(32768),  dtree : [],
+		imap : new u16(  512),  itree : [],
+		//rev9 : new u16(  512)
+		rev15: new u16(1<<15),
+		lhst : new u32(286), dhst : new u32( 30), ihst : new u32(19),
+		lits : new u32(15000),
+		strt : new u16(1<<16),
+		prev : new u16(1<<15)
+	};  
+} ();
+
+(function(){	
+	var U = UZIP.F.U;
+	var len = 1<<15;
+	for(var i=0; i<len; i++) {
+		var x = i;
+		x = (((x & 0xaaaaaaaa) >>> 1) | ((x & 0x55555555) << 1));
+		x = (((x & 0xcccccccc) >>> 2) | ((x & 0x33333333) << 2));
+		x = (((x & 0xf0f0f0f0) >>> 4) | ((x & 0x0f0f0f0f) << 4));
+		x = (((x & 0xff00ff00) >>> 8) | ((x & 0x00ff00ff) << 8));
+		U.rev15[i] = (((x >>> 16) | (x << 16)))>>>17;
+	}
+	
+	function pushV(tgt, n, sv) {  while(n--!=0) tgt.push(0,sv);  }
+	
+	for(var i=0; i<32; i++) {  U.ldef[i]=(U.of0[i]<<3)|U.exb[i];  U.ddef[i]=(U.df0[i]<<4)|U.dxb[i];  }
+	
+	pushV(U.fltree, 144, 8);  pushV(U.fltree, 255-143, 9);  pushV(U.fltree, 279-255, 7);  pushV(U.fltree,287-279,8);
+	/*
+	var i = 0;
+	for(; i<=143; i++) U.fltree.push(0,8);
+	for(; i<=255; i++) U.fltree.push(0,9);
+	for(; i<=279; i++) U.fltree.push(0,7);
+	for(; i<=287; i++) U.fltree.push(0,8);
+	*/
+	UZIP.F.makeCodes(U.fltree, 9);
+	UZIP.F.codes2map(U.fltree, 9, U.flmap);
+	UZIP.F.revCodes (U.fltree, 9)
+	
+	pushV(U.fdtree,32,5);
+	//for(i=0;i<32; i++) U.fdtree.push(0,5);
+	UZIP.F.makeCodes(U.fdtree, 5);
+	UZIP.F.codes2map(U.fdtree, 5, U.fdmap);
+	UZIP.F.revCodes (U.fdtree, 5)
+	
+	pushV(U.itree,19,0);  pushV(U.ltree,286,0);  pushV(U.dtree,30,0);  pushV(U.ttree,320,0);
+	/*
+	for(var i=0; i< 19; i++) U.itree.push(0,0);
+	for(var i=0; i<286; i++) U.ltree.push(0,0);
+	for(var i=0; i< 30; i++) U.dtree.push(0,0);
+	for(var i=0; i<320; i++) U.ttree.push(0,0);
+	*/
+})()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 /***/ })
 
 /******/ });
@@ -13739,6 +14576,7 @@ __webpack_require__.d(__webpack_exports__, {
   "KO": () => (/* reexport */ Node_Node),
   "Tl": () => (/* reexport */ Earcut_Earcut),
   "Wd": () => (/* reexport */ FileSystem),
+  "OB": () => (/* reexport */ lib_namespaceObject),
   "$c": () => (/* binding */ JSZip),
   "nd": () => (/* binding */ JSZipUtils),
   "h9": () => (/* reexport */ ModelLoader),
@@ -13755,6 +14593,154 @@ __webpack_require__.d(__webpack_exports__, {
   "Y3": () => (/* reexport */ readPackMeta),
   "mt": () => (/* reexport */ readPackMetaAndIcon),
   "ox": () => (/* reexport */ resolveFileSystem)
+});
+
+// NAMESPACE OBJECT: ./node_modules/image-in-browser/lib/index.js
+var lib_namespaceObject = {};
+__webpack_require__.r(lib_namespaceObject);
+__webpack_require__.d(lib_namespaceObject, {
+  "ArrayUtils": () => (ArrayUtils),
+  "BitOperators": () => (BitOperators),
+  "BitmapCompressionMode": () => (BitmapCompressionMode),
+  "BitmapFileHeader": () => (BitmapFileHeader),
+  "BlendMode": () => (BlendMode),
+  "BmpDecoder": () => (BmpDecoder),
+  "BmpEncoder": () => (BmpEncoder),
+  "BmpInfo": () => (BmpInfo),
+  "Color": () => (color_Color),
+  "ColorChannel": () => (ColorChannel),
+  "ColorModel": () => (ColorModel),
+  "ComponentData": () => (ComponentData),
+  "Crc32": () => (Crc32),
+  "DisposeMode": () => (DisposeMode),
+  "DitherKernel": () => (DitherKernel),
+  "DitherPixel": () => (DitherPixel),
+  "Draw": () => (Draw),
+  "ExifAsciiValue": () => (ExifAsciiValue),
+  "ExifByteValue": () => (ExifByteValue),
+  "ExifData": () => (ExifData),
+  "ExifDoubleValue": () => (ExifDoubleValue),
+  "ExifEntry": () => (ExifEntry),
+  "ExifGpsTags": () => (ExifGpsTags),
+  "ExifIFD": () => (ExifIFD),
+  "ExifIFDContainer": () => (ExifIFDContainer),
+  "ExifImageTags": () => (ExifImageTags),
+  "ExifInteropTags": () => (ExifInteropTags),
+  "ExifLongValue": () => (ExifLongValue),
+  "ExifRationalValue": () => (ExifRationalValue),
+  "ExifSByteValue": () => (ExifSByteValue),
+  "ExifSLongValue": () => (ExifSLongValue),
+  "ExifSRationalValue": () => (ExifSRationalValue),
+  "ExifSShortValue": () => (ExifSShortValue),
+  "ExifShortValue": () => (ExifShortValue),
+  "ExifSingleValue": () => (ExifSingleValue),
+  "ExifTag": () => (ExifTag),
+  "ExifTagNameToID": () => (ExifTagNameToID),
+  "ExifUndefinedValue": () => (ExifUndefinedValue),
+  "ExifValue": () => (ExifValue),
+  "ExifValueType": () => (ExifValueType),
+  "ExifValueTypeSize": () => (ExifValueTypeSize),
+  "ExifValueTypeString": () => (ExifValueTypeString),
+  "FlipDirection": () => (FlipDirection),
+  "FrameAnimation": () => (FrameAnimation),
+  "FrameType": () => (FrameType),
+  "GifColorMap": () => (GifColorMap),
+  "GifDecoder": () => (GifDecoder),
+  "GifEncoder": () => (GifEncoder),
+  "GifImageDesc": () => (GifImageDesc),
+  "GifInfo": () => (GifInfo),
+  "Half": () => (Half),
+  "HdrImage": () => (HdrImage),
+  "HdrSlice": () => (HdrSlice),
+  "HdrToImage": () => (HdrToImage),
+  "HeapNode": () => (HeapNode),
+  "ICCPCompressionMode": () => (ICCPCompressionMode),
+  "ICCProfileData": () => (ICCProfileData),
+  "IcoBmpInfo": () => (IcoBmpInfo),
+  "IcoDecoder": () => (IcoDecoder),
+  "IcoEncoder": () => (IcoEncoder),
+  "IcoInfo": () => (IcoInfo),
+  "IcoInfoImage": () => (IcoInfoImage),
+  "ImageFilter": () => (ImageFilter),
+  "ImageTransform": () => (ImageTransform),
+  "InputBuffer": () => (InputBuffer),
+  "Interpolation": () => (Interpolation),
+  "Jpeg": () => (Jpeg),
+  "JpegAdobe": () => (JpegAdobe),
+  "JpegComponent": () => (JpegComponent),
+  "JpegData": () => (JpegData),
+  "JpegDecoder": () => (JpegDecoder),
+  "JpegEncoder": () => (JpegEncoder),
+  "JpegFrame": () => (JpegFrame),
+  "JpegHuffman": () => (JpegHuffman),
+  "JpegInfo": () => (JpegInfo),
+  "JpegJfif": () => (JpegJfif),
+  "JpegQuantize": () => (JpegQuantize),
+  "JpegScan": () => (JpegScan),
+  "Line": () => (Line),
+  "LzwDecoder": () => (LzwDecoder),
+  "MathOperators": () => (MathOperators),
+  "MemoryImage": () => (MemoryImage),
+  "NeuralQuantizer": () => (NeuralQuantizer),
+  "NoiseType": () => (NoiseType),
+  "OctreeNode": () => (OctreeNode),
+  "OctreeQuantizer": () => (OctreeQuantizer),
+  "OutputBuffer": () => (OutputBuffer),
+  "PixelateMode": () => (PixelateMode),
+  "PngDecoder": () => (PngDecoder),
+  "PngEncoder": () => (PngEncoder),
+  "PngFrame": () => (PngFrame),
+  "PngInfo": () => (PngInfo),
+  "Point": () => (Point),
+  "QuantizeMethod": () => (QuantizeMethod),
+  "RandomUtils": () => (RandomUtils),
+  "Rational": () => (Rational),
+  "Rectangle": () => (Rectangle),
+  "RgbChannelSet": () => (RgbChannelSet),
+  "SeparableKernel": () => (SeparableKernel),
+  "TextCodec": () => (TextCodec),
+  "TgaDecoder": () => (TgaDecoder),
+  "TgaEncoder": () => (TgaEncoder),
+  "TgaInfo": () => (TgaInfo),
+  "TiffBitReader": () => (TiffBitReader),
+  "TiffDecoder": () => (TiffDecoder),
+  "TiffEncoder": () => (TiffEncoder),
+  "TiffEntry": () => (TiffEntry),
+  "TiffFaxDecoder": () => (TiffFaxDecoder),
+  "TiffImage": () => (TiffImage),
+  "TiffInfo": () => (TiffInfo),
+  "TrimMode": () => (TrimMode),
+  "TrimSide": () => (TrimSide),
+  "TrimTransform": () => (TrimTransform),
+  "decodeAnimation": () => (decodeAnimation),
+  "decodeBmp": () => (decodeBmp),
+  "decodeGif": () => (decodeGif),
+  "decodeGifAnimation": () => (decodeGifAnimation),
+  "decodeIco": () => (decodeIco),
+  "decodeImage": () => (decodeImage),
+  "decodeJpg": () => (decodeJpg),
+  "decodeNamedAnimation": () => (decodeNamedAnimation),
+  "decodeNamedImage": () => (decodeNamedImage),
+  "decodePng": () => (decodePng),
+  "decodePngAnimation": () => (decodePngAnimation),
+  "decodeTga": () => (decodeTga),
+  "decodeTiff": () => (decodeTiff),
+  "decodeTiffAnimation": () => (decodeTiffAnimation),
+  "encodeBmp": () => (encodeBmp),
+  "encodeGif": () => (encodeGif),
+  "encodeGifAnimation": () => (encodeGifAnimation),
+  "encodeIco": () => (encodeIco),
+  "encodeIcoImages": () => (encodeIcoImages),
+  "encodeJpg": () => (encodeJpg),
+  "encodeNamedImage": () => (encodeNamedImage),
+  "encodePng": () => (encodePng),
+  "encodePngAnimation": () => (encodePngAnimation),
+  "encodeTga": () => (encodeTga),
+  "encodeTiff": () => (encodeTiff),
+  "findDecoderForData": () => (findDecoderForData),
+  "getDecoderForNamedImage": () => (getDecoderForNamedImage),
+  "getExifValueTypeSize": () => (getExifValueTypeSize),
+  "getExifValueTypeString": () => (getExifValueTypeString)
 });
 
 // NAMESPACE OBJECT: ./node_modules/three/build/three.module.js
@@ -13841,7 +14827,7 @@ __webpack_require__.d(three_module_namespaceObject, {
   "Cylindrical": () => (Cylindrical),
   "Data3DTexture": () => (Data3DTexture),
   "DataArrayTexture": () => (DataArrayTexture),
-  "DataTexture": () => (DataTexture),
+  "DataTexture": () => (three_module_DataTexture),
   "DataTexture2DArray": () => (DataTexture2DArray),
   "DataTexture3D": () => (DataTexture3D),
   "DataTextureLoader": () => (DataTextureLoader),
@@ -13934,7 +14920,7 @@ __webpack_require__.d(three_module_namespaceObject, {
   "LessStencilFunc": () => (three_module_LessStencilFunc),
   "Light": () => (Light),
   "LightProbe": () => (LightProbe),
-  "Line": () => (Line),
+  "Line": () => (three_module_Line),
   "Line3": () => (Line3),
   "LineBasicMaterial": () => (LineBasicMaterial),
   "LineCurve": () => (LineCurve),
@@ -20353,6 +21339,30 @@ class TextureLoader extends Loader {
 
 
 
+;// CONCATENATED MODULE: ./node_modules/@xmcl/model/node_modules/three/src/textures/DataTexture.js
+
+
+
+class DataTexture extends Texture {
+
+	constructor( data = null, width = 1, height = 1, format, type, mapping, wrapS, wrapT, magFilter = constants_NearestFilter, minFilter = constants_NearestFilter, anisotropy, encoding ) {
+
+		super( null, mapping, wrapS, wrapT, magFilter, minFilter, format, type, anisotropy, encoding );
+
+		this.isDataTexture = true;
+
+		this.image = { data: data, width: width, height: height };
+
+		this.generateMipmaps = false;
+		this.flipY = false;
+		this.unpackAlignment = 1;
+
+	}
+
+}
+
+
+
 ;// CONCATENATED MODULE: ./node_modules/@xmcl/model/node_modules/three/src/materials/Material.js
 
 
@@ -26112,7 +27122,17138 @@ class BoxGeometry_BoxGeometry extends BufferGeometry {
 
 
 
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/common/frame-type.js
+var FrameType;
+(function (FrameType) {
+    FrameType[FrameType["animation"] = 0] = "animation";
+    FrameType[FrameType["page"] = 1] = "page";
+})(FrameType || (FrameType = {}));
+//# sourceMappingURL=frame-type.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/common/frame-animation.js
+
+class FrameAnimation {
+    constructor(options) {
+        var _a, _b, _c, _d;
+        this._width = 0;
+        this._height = 0;
+        this._backgroundColor = 0xffffffff;
+        this._loopCount = 0;
+        this._frameType = FrameType.animation;
+        this._frames = [];
+        this._width = (_a = options === null || options === void 0 ? void 0 : options.width) !== null && _a !== void 0 ? _a : 0;
+        this._height = (_b = options === null || options === void 0 ? void 0 : options.height) !== null && _b !== void 0 ? _b : 0;
+        this._loopCount = (_c = options === null || options === void 0 ? void 0 : options.loopCount) !== null && _c !== void 0 ? _c : 0;
+        this._frameType = (_d = options === null || options === void 0 ? void 0 : options.frameType) !== null && _d !== void 0 ? _d : FrameType.animation;
+    }
+    get width() {
+        return this._width;
+    }
+    get height() {
+        return this._height;
+    }
+    get backgroundColor() {
+        return this._backgroundColor;
+    }
+    get loopCount() {
+        return this._loopCount;
+    }
+    get frameType() {
+        return this._frameType;
+    }
+    get frames() {
+        return this._frames;
+    }
+    get numFrames() {
+        return this.frames.length;
+    }
+    get first() {
+        return this.frames[0];
+    }
+    get last() {
+        return this.frames[this.frames.length - 1];
+    }
+    get isEmpty() {
+        return this.frames.length === 0;
+    }
+    get isNotEmpty() {
+        return this.frames.length > 0;
+    }
+    getFrame(index) {
+        return this.frames[index];
+    }
+    addFrame(image) {
+        if (this._width < image.width) {
+            this._width = image.width;
+        }
+        if (this._height < image.height) {
+            this._height = image.height;
+        }
+        this.frames.push(image);
+    }
+    [Symbol.iterator]() {
+        let index = -1;
+        return {
+            next: () => {
+                return {
+                    value: this._frames[++index],
+                    done: !(index in this._frames),
+                };
+            },
+        };
+    }
+}
+//# sourceMappingURL=frame-animation.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/error/image-error.js
+class ImageError extends Error {
+    toString() {
+        return `ImageError: ${this.message}`;
+    }
+}
+//# sourceMappingURL=image-error.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/common/bit-operators.js
+class BitOperators {
+    static signed(bits, value) {
+        return value & (1 << (bits - 1)) ? value - (1 << bits) : value;
+    }
+    static shiftR(v, n) {
+        return BitOperators.signed(32, v >> n);
+    }
+    static shiftL(v, n) {
+        return BitOperators.signed(32, v << n);
+    }
+    static toInt8(d) {
+        BitOperators.uint8arr[0] = d;
+        return BitOperators.uint8ToInt8arr[0];
+    }
+    static toUint8(d) {
+        BitOperators.int8arr[0] = d;
+        return BitOperators.int8ToUint8arr[0];
+    }
+    static toInt16(d) {
+        BitOperators.uint16arr[0] = d;
+        return BitOperators.uint16ToInt16arr[0];
+    }
+    static toUint16(d) {
+        BitOperators.int16arr[0] = d;
+        return BitOperators.int16ToUint16arr[0];
+    }
+    static toInt32(d) {
+        BitOperators.uint32arr[0] = d;
+        return BitOperators.uint32ToInt32arr[0];
+    }
+    static toUint32(d) {
+        BitOperators.int32arr[0] = d;
+        return BitOperators.int32ToUint32arr[0];
+    }
+    static toFloat32(d) {
+        BitOperators.uint32arr[0] = d;
+        return BitOperators.uint32ToFloat32arr[0];
+    }
+    static toFloat64(d) {
+        BitOperators.uint64arr[0] = d;
+        return BitOperators.uint64ToFloat64arr[0];
+    }
+    static debugBits32(value) {
+        if (value === undefined) {
+            return 'undefined';
+        }
+        const bitCount = 32;
+        let result = '';
+        for (let i = bitCount; i > -1; i--) {
+            result += (value & (1 << i)) === 0 ? '0' : '1';
+        }
+        return result;
+    }
+}
+BitOperators.uint8arr = new Uint8Array(1);
+BitOperators.uint8ToInt8arr = new Int8Array(BitOperators.uint8arr.buffer);
+BitOperators.int8arr = new Int8Array(1);
+BitOperators.int8ToUint8arr = new Uint8Array(BitOperators.int8arr.buffer);
+BitOperators.uint16arr = new Uint16Array(1);
+BitOperators.uint16ToInt16arr = new Int16Array(BitOperators.uint16arr.buffer);
+BitOperators.int16arr = new Int16Array(1);
+BitOperators.int16ToUint16arr = new Uint16Array(BitOperators.int16arr.buffer);
+BitOperators.uint32arr = new Uint32Array(1);
+BitOperators.uint32ToInt32arr = new Int32Array(BitOperators.uint32arr.buffer);
+BitOperators.int32arr = new Int32Array(1);
+BitOperators.int32ToUint32arr = new Uint32Array(BitOperators.int32arr.buffer);
+BitOperators.uint32ToFloat32arr = new Float32Array(BitOperators.uint32arr.buffer);
+BitOperators.uint64arr = new BigUint64Array(1);
+BitOperators.uint64ToFloat64arr = new Float64Array(BitOperators.uint64arr.buffer);
+//# sourceMappingURL=bit-operators.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/common/text-codec.js
+
+class TextCodec {
+    static getCodePoints(str) {
+        const array = new Uint8Array(str.length);
+        for (let i = 0; i < str.length; i++) {
+            const codePoint = str.codePointAt(i);
+            if (codePoint !== undefined) {
+                if (0 <= codePoint && codePoint < 256) {
+                    array[i] = codePoint;
+                }
+                else {
+                    throw new ImageError(`Error encoding text "${str}": unknown character code point ${codePoint}`);
+                }
+            }
+            else {
+                throw new ImageError(`Error encoding text "${str}"`);
+            }
+        }
+        return array;
+    }
+}
+TextCodec.utf8Decoder = new TextDecoder('utf8');
+TextCodec.latin1Decoder = new TextDecoder('latin1');
+//# sourceMappingURL=text-codec.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/common/input-buffer.js
+
+
+
+class InputBuffer {
+    constructor(options) {
+        var _a, _b;
+        this._buffer = options.buffer;
+        this._bigEndian = (_a = options.bigEndian) !== null && _a !== void 0 ? _a : false;
+        this._offset = (_b = options.offset) !== null && _b !== void 0 ? _b : 0;
+        this._start = this._offset;
+        this._end =
+            options.length !== undefined
+                ? this._start + options.length
+                : this._buffer.length;
+    }
+    get buffer() {
+        return this._buffer;
+    }
+    set bigEndian(v) {
+        this._bigEndian = v;
+    }
+    get bigEndian() {
+        return this._bigEndian;
+    }
+    set offset(v) {
+        this._offset = v;
+    }
+    get offset() {
+        return this._offset;
+    }
+    get start() {
+        return this._start;
+    }
+    get end() {
+        return this._end;
+    }
+    get position() {
+        return this._offset - this._start;
+    }
+    get length() {
+        return this._end - this._offset;
+    }
+    get isEOS() {
+        return this._offset >= this._end;
+    }
+    static from(other, offset, length) {
+        const offsetFromOther = offset !== null && offset !== void 0 ? offset : 0;
+        const result = new InputBuffer({
+            buffer: other._buffer,
+            bigEndian: other._bigEndian,
+            offset: other._offset + offsetFromOther,
+            length: length,
+        });
+        result._start = other._start;
+        result._end =
+            length !== undefined
+                ? other.offset + offsetFromOther + length
+                : other._end;
+        return result;
+    }
+    rewind() {
+        this._offset = this._start;
+    }
+    getByte(index) {
+        return this._buffer[this._offset + index];
+    }
+    setByte(index, value) {
+        return (this._buffer[this._offset + index] = value);
+    }
+    memset(start, length, value) {
+        this._buffer.fill(this._offset + start, this._offset + start + length, value);
+    }
+    subarray(count, position, offset = 0) {
+        let pos = position !== undefined ? this._start + position : this._offset;
+        pos += offset;
+        return new InputBuffer({
+            buffer: this._buffer,
+            bigEndian: this._bigEndian,
+            offset: pos,
+            length: count,
+        });
+    }
+    indexOf(value, offset = 0) {
+        for (let i = this._offset + offset, end = this._offset + this.length; i < end; ++i) {
+            if (this._buffer[i] === value) {
+                return i - this._start;
+            }
+        }
+        return -1;
+    }
+    peekBytes(count, offset = 0) {
+        return this.subarray(count, undefined, offset);
+    }
+    skip(count) {
+        this._offset += count;
+    }
+    readByte() {
+        return this._buffer[this._offset++];
+    }
+    readInt8() {
+        return BitOperators.toInt8(this.readByte());
+    }
+    readBytes(count) {
+        const bytes = this.subarray(count);
+        this._offset += bytes.length;
+        return bytes;
+    }
+    readString(length) {
+        if (length === undefined) {
+            const codes = [];
+            while (!this.isEOS) {
+                const c = this.readByte();
+                if (c === 0) {
+                    return String.fromCharCode(...codes);
+                }
+                codes.push(c);
+            }
+            throw new ImageError('EOF reached without finding string terminator');
+        }
+        const s = this.readBytes(length);
+        const bytes = s.toUint8Array();
+        const result = String.fromCharCode(...bytes);
+        return result;
+    }
+    readStringUtf8() {
+        const codes = [];
+        while (!this.isEOS) {
+            const c = this.readByte();
+            if (c === 0) {
+                const array = new Uint8Array(codes);
+                return TextCodec.utf8Decoder.decode(array);
+            }
+            codes.push(c);
+        }
+        throw new ImageError('EOF reached without finding string terminator');
+    }
+    readUint16() {
+        const b1 = this._buffer[this._offset++] & 0xff;
+        const b2 = this._buffer[this._offset++] & 0xff;
+        if (this._bigEndian) {
+            return (b1 << 8) | b2;
+        }
+        return (b2 << 8) | b1;
+    }
+    readInt16() {
+        return BitOperators.toInt16(this.readUint16());
+    }
+    readUint24() {
+        const b1 = this._buffer[this._offset++] & 0xff;
+        const b2 = this._buffer[this._offset++] & 0xff;
+        const b3 = this._buffer[this._offset++] & 0xff;
+        if (this._bigEndian) {
+            return b3 | (b2 << 8) | (b1 << 16);
+        }
+        return b1 | (b2 << 8) | (b3 << 16);
+    }
+    readUint32() {
+        const b1 = this._buffer[this._offset++] & 0xff;
+        const b2 = this._buffer[this._offset++] & 0xff;
+        const b3 = this._buffer[this._offset++] & 0xff;
+        const b4 = this._buffer[this._offset++] & 0xff;
+        const d = this._bigEndian
+            ? (b1 << 24) | (b2 << 16) | (b3 << 8) | b4
+            : (b4 << 24) | (b3 << 16) | (b2 << 8) | b1;
+        return BitOperators.toUint32(d);
+    }
+    readInt32() {
+        return BitOperators.toInt32(this.readUint32());
+    }
+    readFloat32() {
+        return BitOperators.toFloat32(this.readUint32());
+    }
+    readFloat64() {
+        return BitOperators.toFloat64(this.readUint64());
+    }
+    readUint64() {
+        const b1 = this._buffer[this._offset++] & 0xff;
+        const b2 = this._buffer[this._offset++] & 0xff;
+        const b3 = this._buffer[this._offset++] & 0xff;
+        const b4 = this._buffer[this._offset++] & 0xff;
+        const b5 = this._buffer[this._offset++] & 0xff;
+        const b6 = this._buffer[this._offset++] & 0xff;
+        const b7 = this._buffer[this._offset++] & 0xff;
+        const b8 = this._buffer[this._offset++] & 0xff;
+        if (this._bigEndian) {
+            return (BigInt(b1 << 56) |
+                BigInt(b2 << 48) |
+                BigInt(b3 << 40) |
+                BigInt(b4 << 32) |
+                BigInt(b5 << 24) |
+                BigInt(b6 << 16) |
+                BigInt(b7 << 8) |
+                BigInt(b8));
+        }
+        return (BigInt(b8 << 56) |
+            BigInt(b7 << 48) |
+            BigInt(b6 << 40) |
+            BigInt(b5 << 32) |
+            BigInt(b4 << 24) |
+            BigInt(b3 << 16) |
+            BigInt(b2 << 8) |
+            BigInt(b1));
+    }
+    toUint8Array(offset, length) {
+        const correctedOffset = offset !== null && offset !== void 0 ? offset : 0;
+        const correctedLength = length !== null && length !== void 0 ? length : this.length - correctedOffset;
+        return new Uint8Array(this._buffer.buffer, this._buffer.byteOffset + this._offset + correctedOffset, correctedLength);
+    }
+    toUint32Array(offset) {
+        const correctedOffset = offset !== null && offset !== void 0 ? offset : 0;
+        return new Uint32Array(this._buffer.buffer, this._buffer.byteOffset + this._offset + correctedOffset);
+    }
+}
+//# sourceMappingURL=input-buffer.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/common/array-utils.js
+
+class ArrayUtils {
+    static copyInt8(from, begin, end) {
+        return Int8Array.from(from.subarray(begin, end));
+    }
+    static copyUint8(from, begin, end) {
+        return Uint8Array.from(from.subarray(begin, end));
+    }
+    static copyInt16(from, begin, end) {
+        return Int16Array.from(from.subarray(begin, end));
+    }
+    static copyUint16(from, begin, end) {
+        return Uint16Array.from(from.subarray(begin, end));
+    }
+    static copyInt32(from, begin, end) {
+        return Int32Array.from(from.subarray(begin, end));
+    }
+    static copyUint32(from, begin, end) {
+        return Uint32Array.from(from.subarray(begin, end));
+    }
+    static copyFloat32(from, begin, end) {
+        return Float32Array.from(from.subarray(begin, end));
+    }
+    static copyFloat64(from, begin, end) {
+        return Float64Array.from(from.subarray(begin, end));
+    }
+    static copy(from, begin, end) {
+        if (from instanceof Int8Array) {
+            return ArrayUtils.copyInt8(from, begin, end);
+        }
+        else if (from instanceof Uint8Array) {
+            return ArrayUtils.copyUint8(from, begin, end);
+        }
+        else if (from instanceof Int16Array) {
+            return ArrayUtils.copyInt16(from, begin, end);
+        }
+        else if (from instanceof Uint16Array) {
+            return ArrayUtils.copyUint16(from, begin, end);
+        }
+        else if (from instanceof Int32Array) {
+            return ArrayUtils.copyInt32(from, begin, end);
+        }
+        else if (from instanceof Uint32Array) {
+            return ArrayUtils.copyUint32(from, begin, end);
+        }
+        else if (from instanceof Float32Array) {
+            return ArrayUtils.copyFloat32(from, begin, end);
+        }
+        else if (from instanceof Float64Array) {
+            return ArrayUtils.copyFloat64(from, begin, end);
+        }
+        throw new ImageError('Unknown array type');
+    }
+    static setRange(to, start, end, from, skipCount = 0) {
+        const viewFrom = from.subarray(skipCount, end - start);
+        to.set(viewFrom, start);
+    }
+}
+//# sourceMappingURL=array-utils.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/common/rgb-channel-set.js
+var RgbChannelSet;
+(function (RgbChannelSet) {
+    RgbChannelSet[RgbChannelSet["rgb"] = 0] = "rgb";
+    RgbChannelSet[RgbChannelSet["rgba"] = 1] = "rgba";
+})(RgbChannelSet || (RgbChannelSet = {}));
+//# sourceMappingURL=rgb-channel-set.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/common/dispose-mode.js
+var DisposeMode;
+(function (DisposeMode) {
+    DisposeMode[DisposeMode["none"] = 0] = "none";
+    DisposeMode[DisposeMode["clear"] = 1] = "clear";
+    DisposeMode[DisposeMode["previous"] = 2] = "previous";
+})(DisposeMode || (DisposeMode = {}));
+//# sourceMappingURL=dispose-mode.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/common/blend-mode.js
+var BlendMode;
+(function (BlendMode) {
+    BlendMode[BlendMode["source"] = 0] = "source";
+    BlendMode[BlendMode["over"] = 1] = "over";
+})(BlendMode || (BlendMode = {}));
+//# sourceMappingURL=blend-mode.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/common/color-model.js
+var ColorModel;
+(function (ColorModel) {
+    ColorModel[ColorModel["argb"] = 0] = "argb";
+    ColorModel[ColorModel["abgr"] = 1] = "abgr";
+    ColorModel[ColorModel["rgba"] = 2] = "rgba";
+    ColorModel[ColorModel["bgra"] = 3] = "bgra";
+    ColorModel[ColorModel["rgb"] = 4] = "rgb";
+    ColorModel[ColorModel["bgr"] = 5] = "bgr";
+    ColorModel[ColorModel["luminance"] = 6] = "luminance";
+})(ColorModel || (ColorModel = {}));
+//# sourceMappingURL=color-model.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/common/interpolation.js
+var Interpolation;
+(function (Interpolation) {
+    Interpolation[Interpolation["nearest"] = 0] = "nearest";
+    Interpolation[Interpolation["linear"] = 1] = "linear";
+    Interpolation[Interpolation["cubic"] = 2] = "cubic";
+    Interpolation[Interpolation["average"] = 3] = "average";
+})(Interpolation || (Interpolation = {}));
+//# sourceMappingURL=interpolation.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/common/color-channel.js
+var ColorChannel;
+(function (ColorChannel) {
+    ColorChannel[ColorChannel["red"] = 0] = "red";
+    ColorChannel[ColorChannel["green"] = 1] = "green";
+    ColorChannel[ColorChannel["blue"] = 2] = "blue";
+    ColorChannel[ColorChannel["alpha"] = 3] = "alpha";
+    ColorChannel[ColorChannel["luminance"] = 4] = "luminance";
+})(ColorChannel || (ColorChannel = {}));
+//# sourceMappingURL=color-channel.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/common/math-operators.js
+class MathOperators {
+    static gcd(x, y) {
+        let _x = Math.abs(x);
+        let _y = Math.abs(y);
+        while (_y) {
+            const t = _y;
+            _y = _x % _y;
+            _x = t;
+        }
+        return _x;
+    }
+    static clamp(num, low, high) {
+        return Math.max(low, Math.min(num, high));
+    }
+    static clampInt(num, low, high) {
+        return Math.trunc(MathOperators.clamp(num, low, high));
+    }
+    static clampInt255(num) {
+        return Math.trunc(MathOperators.clamp(num, 0, 255));
+    }
+}
+//# sourceMappingURL=math-operators.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/common/color.js
+
+
+
+
+class color_Color {
+    static fromRgb(red, green, blue) {
+        return color_Color.getColor(red, green, blue);
+    }
+    static fromRgba(red, green, blue, alpha) {
+        return color_Color.getColor(red, green, blue, alpha);
+    }
+    static fromHsl(hue, saturation, lightness) {
+        const rgb = color_Color.hslToRgb(hue, saturation, lightness);
+        return color_Color.getColor(rgb[0], rgb[1], rgb[2]);
+    }
+    static fromHsv(hue, saturation, value) {
+        const rgb = color_Color.hsvToRgb(hue, saturation, value);
+        return color_Color.getColor(rgb[0], rgb[1], rgb[2]);
+    }
+    static fromXyz(x, y, z) {
+        const rgb = color_Color.xyzToRgb(x, y, z);
+        return color_Color.getColor(rgb[0], rgb[1], rgb[2]);
+    }
+    static fromLab(L, a, b) {
+        const rgb = color_Color.labToRgb(L, a, b);
+        return color_Color.getColor(rgb[0], rgb[1], rgb[2]);
+    }
+    static distance(c1, c2, compareAlpha) {
+        const d1 = c1[0] - c2[0];
+        const d2 = c1[1] - c2[1];
+        const d3 = c1[2] - c2[2];
+        if (compareAlpha) {
+            const dA = c1[3] - c2[3];
+            return Math.sqrt(Math.max(d1 * d1, (d1 - dA) * (d1 - dA)) +
+                Math.max(d2 * d2, (d2 - dA) * (d2 - dA)) +
+                Math.max(d3 * d3, (d3 - dA) * (d3 - dA)));
+        }
+        else {
+            return Math.sqrt(d1 * d1 + d2 * d2 + d3 * d3);
+        }
+    }
+    static alphaBlendColors(dst, src, fraction = 0xff) {
+        const srcAlpha = color_Color.getAlpha(src);
+        if (srcAlpha === 255 && fraction === 0xff) {
+            return src;
+        }
+        if (srcAlpha === 0 && fraction === 0xff) {
+            return dst;
+        }
+        let a = srcAlpha / 255.0;
+        if (fraction !== 0xff) {
+            a *= fraction / 255.0;
+        }
+        const sr = Math.round(color_Color.getRed(src) * a);
+        const sg = Math.round(color_Color.getGreen(src) * a);
+        const sb = Math.round(color_Color.getBlue(src) * a);
+        const sa = Math.round(srcAlpha * a);
+        const dr = Math.round(color_Color.getRed(dst) * (1.0 - a));
+        const dg = Math.round(color_Color.getGreen(dst) * (1.0 - a));
+        const db = Math.round(color_Color.getBlue(dst) * (1.0 - a));
+        const da = Math.round(color_Color.getAlpha(dst) * (1.0 - a));
+        return color_Color.getColor(sr + dr, sg + dg, sb + db, sa + da);
+    }
+    static getChannel(color, channel) {
+        if (channel === ColorChannel.red) {
+            return color_Color.getRed(color);
+        }
+        else if (channel === ColorChannel.green) {
+            return color_Color.getGreen(color);
+        }
+        else if (channel === ColorChannel.blue) {
+            return color_Color.getBlue(color);
+        }
+        else if (channel === ColorChannel.alpha) {
+            return color_Color.getAlpha(color);
+        }
+        return color_Color.getLuminance(color);
+    }
+    static getAlpha(color) {
+        return (color >> 24) & 0xff;
+    }
+    static getBlue(color) {
+        return (color >> 16) & 0xff;
+    }
+    static getColor(r, g, b, a = 255) {
+        const color = (MathOperators.clampInt255(a) << 24) |
+            (MathOperators.clampInt255(b) << 16) |
+            (MathOperators.clampInt255(g) << 8) |
+            MathOperators.clampInt255(r);
+        return BitOperators.toUint32(color);
+    }
+    static getGreen(color) {
+        return (color >> 8) & 0xff;
+    }
+    static getLuminance(color) {
+        const r = color_Color.getRed(color);
+        const g = color_Color.getGreen(color);
+        const b = color_Color.getBlue(color);
+        return color_Color.getLuminanceRgb(r, g, b);
+    }
+    static getLuminanceRgb(r, g, b) {
+        return Math.round(0.299 * r + 0.587 * g + 0.114 * b);
+    }
+    static getRed(color) {
+        return color & 0xff;
+    }
+    static isBlack(color) {
+        return (color & 0xffffff) === 0x0;
+    }
+    static isWhite(color) {
+        return (color & 0xffffff) === 0xffffff;
+    }
+    static setAlpha(color, value) {
+        return (color & 0x00ffffff) | (MathOperators.clampInt255(value) << 24);
+    }
+    static setBlue(color, value) {
+        return (color & 0xff00ffff) | (MathOperators.clampInt255(value) << 16);
+    }
+    static setChannel(color, channel, value) {
+        if (channel === ColorChannel.red) {
+            return color_Color.setRed(color, value);
+        }
+        else if (channel === ColorChannel.green) {
+            return color_Color.setGreen(color, value);
+        }
+        else if (channel === ColorChannel.blue) {
+            return color_Color.setBlue(color, value);
+        }
+        else if (channel === ColorChannel.alpha) {
+            return color_Color.setAlpha(color, value);
+        }
+        return color;
+    }
+    static setGreen(color, value) {
+        return (color & 0xffff00ff) | (MathOperators.clampInt255(value) << 8);
+    }
+    static setRed(color, value) {
+        return (color & 0xffffff00) | MathOperators.clampInt255(value);
+    }
+    static hslToRgb(hue, saturation, lightness) {
+        if (saturation === 0) {
+            const gray = Math.trunc(lightness * 255.0);
+            return [gray, gray, gray];
+        }
+        const hue2rgb = (p, q, t) => {
+            let ti = t;
+            if (ti < 0.0) {
+                ti += 1.0;
+            }
+            if (ti > 1) {
+                ti -= 1.0;
+            }
+            if (ti < 1.0 / 6.0) {
+                return p + (q - p) * 6.0 * ti;
+            }
+            if (ti < 1.0 / 2.0) {
+                return q;
+            }
+            if (ti < 2.0 / 3.0) {
+                return p + (q - p) * (2.0 / 3.0 - ti) * 6.0;
+            }
+            return p;
+        };
+        const q = lightness < 0.5
+            ? lightness * (1.0 + saturation)
+            : lightness + saturation - lightness * saturation;
+        const p = 2.0 * lightness - q;
+        const r = hue2rgb(p, q, hue + 1.0 / 3.0);
+        const g = hue2rgb(p, q, hue);
+        const b = hue2rgb(p, q, hue - 1.0 / 3.0);
+        return [
+            Math.round(r * 255.0),
+            Math.round(g * 255.0),
+            Math.round(b * 255.0),
+        ];
+    }
+    static hsvToRgb(hue, saturation, brightness) {
+        if (saturation === 0) {
+            const gray = Math.round(brightness * 255.0);
+            return [gray, gray, gray];
+        }
+        const h = (hue - Math.floor(hue)) * 6.0;
+        const f = h - Math.floor(h);
+        const p = brightness * (1.0 - saturation);
+        const q = brightness * (1.0 - saturation * f);
+        const t = brightness * (1.0 - saturation * (1.0 - f));
+        switch (Math.trunc(h)) {
+            case 0:
+                return [
+                    Math.round(brightness * 255.0),
+                    Math.round(t * 255.0),
+                    Math.round(p * 255.0),
+                ];
+            case 1:
+                return [
+                    Math.round(q * 255.0),
+                    Math.round(brightness * 255.0),
+                    Math.round(p * 255.0),
+                ];
+            case 2:
+                return [
+                    Math.round(p * 255.0),
+                    Math.round(brightness * 255.0),
+                    Math.round(t * 255.0),
+                ];
+            case 3:
+                return [
+                    Math.round(p * 255.0),
+                    Math.round(q * 255.0),
+                    Math.round(brightness * 255.0),
+                ];
+            case 4:
+                return [
+                    Math.round(t * 255.0),
+                    Math.round(p * 255.0),
+                    Math.round(brightness * 255.0),
+                ];
+            case 5:
+                return [
+                    Math.round(brightness * 255.0),
+                    Math.round(p * 255.0),
+                    Math.round(q * 255.0),
+                ];
+            default:
+                throw new ImageError('Invalid hue');
+        }
+    }
+    static rgbToHsl(r, g, b) {
+        const ri = r / 255.0;
+        const gi = g / 255.0;
+        const bi = b / 255.0;
+        const mx = Math.max(ri, Math.max(gi, bi));
+        const mn = Math.min(ri, Math.min(gi, bi));
+        const l = (mx + mn) / 2.0;
+        if (mx === mn) {
+            return [0.0, 0.0, l];
+        }
+        const d = mx - mn;
+        const s = l > 0.5 ? d / (2.0 - mx - mn) : d / (mx + mn);
+        let h = 0;
+        if (mx === ri) {
+            h = (gi - bi) / d + (gi < bi ? 6.0 : 0.0);
+        }
+        else if (mx === gi) {
+            h = (bi - ri) / d + 2.0;
+        }
+        else {
+            h = (ri - gi) / d + 4.0;
+        }
+        h /= 6.0;
+        return [h, s, l];
+    }
+    static labToXyz(l, a, b) {
+        let y = (l + 16) / 116;
+        let x = y + a / 500;
+        let z = y - b / 200;
+        if (Math.pow(x, 3) > 0.008856) {
+            x = Math.pow(x, 3);
+        }
+        else {
+            x = (x - 16 / 116) / 7.787;
+        }
+        if (Math.pow(y, 3) > 0.008856) {
+            y = Math.pow(y, 3);
+        }
+        else {
+            y = (y - 16 / 116) / 7.787;
+        }
+        if (Math.pow(z, 3) > 0.008856) {
+            z = Math.pow(z, 3);
+        }
+        else {
+            z = (z - 16 / 116) / 7.787;
+        }
+        return [
+            Math.trunc(x * 95.047),
+            Math.trunc(y * 100.0),
+            Math.trunc(z * 108.883),
+        ];
+    }
+    static xyzToRgb(x, y, z) {
+        const xi = x / 100;
+        const yi = y / 100;
+        const zi = z / 100;
+        let r = 3.2406 * xi + -1.5372 * yi + -0.4986 * zi;
+        let g = -0.9689 * xi + 1.8758 * yi + 0.0415 * zi;
+        let b = 0.0557 * xi + -0.204 * yi + 1.057 * zi;
+        if (r > 0.0031308) {
+            r = 1.055 * Math.pow(r, 0.4166666667) - 0.055;
+        }
+        else {
+            r *= 12.92;
+        }
+        if (g > 0.0031308) {
+            g = 1.055 * Math.pow(g, 0.4166666667) - 0.055;
+        }
+        else {
+            g *= 12.92;
+        }
+        if (b > 0.0031308) {
+            b = 1.055 * Math.pow(b, 0.4166666667) - 0.055;
+        }
+        else {
+            b *= 12.92;
+        }
+        return [
+            Math.trunc(MathOperators.clamp(r * 255, 0, 255)),
+            Math.trunc(MathOperators.clamp(g * 255, 0, 255)),
+            Math.trunc(MathOperators.clamp(b * 255, 0, 255)),
+        ];
+    }
+    static cmykToRgb(c, m, y, k) {
+        const ci = c / 255.0;
+        const mi = m / 255.0;
+        const yi = y / 255.0;
+        const ki = k / 255.0;
+        return [
+            Math.round(255.0 * (1.0 - ci) * (1.0 - ki)),
+            Math.round(255.0 * (1.0 - mi) * (1.0 - ki)),
+            Math.round(255.0 * (1.0 - yi) * (1.0 - ki)),
+        ];
+    }
+    static labToRgb(l, a, b) {
+        const refX = 95.047;
+        const refY = 100.0;
+        const refZ = 108.883;
+        let y = (l + 16) / 116;
+        let x = a / 500 + y;
+        let z = y - b / 200;
+        const y3 = Math.pow(y, 3);
+        if (y3 > 0.008856) {
+            y = y3;
+        }
+        else {
+            y = (y - 16 / 116) / 7.787;
+        }
+        const x3 = Math.pow(x, 3);
+        if (x3 > 0.008856) {
+            x = x3;
+        }
+        else {
+            x = (x - 16 / 116) / 7.787;
+        }
+        const z3 = Math.pow(z, 3);
+        if (z3 > 0.008856) {
+            z = z3;
+        }
+        else {
+            z = (z - 16 / 116) / 7.787;
+        }
+        x *= refX;
+        y *= refY;
+        z *= refZ;
+        x /= 100;
+        y /= 100;
+        z /= 100;
+        let R = x * 3.2406 + y * -1.5372 + z * -0.4986;
+        let G = x * -0.9689 + y * 1.8758 + z * 0.0415;
+        let B = x * 0.0557 + y * -0.204 + z * 1.057;
+        if (R > 0.0031308) {
+            R = 1.055 * Math.pow(R, 1.0 / 2.4) - 0.055;
+        }
+        else {
+            R *= 12.92;
+        }
+        if (G > 0.0031308) {
+            G = 1.055 * Math.pow(G, 1.0 / 2.4) - 0.055;
+        }
+        else {
+            G *= 12.92;
+        }
+        if (B > 0.0031308) {
+            B = 1.055 * Math.pow(B, 1.0 / 2.4) - 0.055;
+        }
+        else {
+            B *= 12.92;
+        }
+        return [
+            Math.trunc(MathOperators.clamp(R * 255.0, 0, 255)),
+            Math.trunc(MathOperators.clamp(G * 255.0, 0, 255)),
+            Math.trunc(MathOperators.clamp(B * 255.0, 0, 255)),
+        ];
+    }
+    static rgbToXyz(r, g, b) {
+        let ri = r / 255;
+        let gi = g / 255;
+        let bi = b / 255;
+        if (ri > 0.04045) {
+            ri = Math.pow((ri + 0.055) / 1.055, 2.4);
+        }
+        else {
+            ri /= 12.92;
+        }
+        if (gi > 0.04045) {
+            gi = Math.pow((gi + 0.055) / 1.055, 2.4);
+        }
+        else {
+            gi /= 12.92;
+        }
+        if (bi > 0.04045) {
+            bi = Math.pow((bi + 0.055) / 1.055, 2.4);
+        }
+        else {
+            bi /= 12.92;
+        }
+        ri *= 100.0;
+        gi *= 100.0;
+        bi *= 100.0;
+        return [
+            ri * 0.4124 + gi * 0.3576 + bi * 0.1805,
+            ri * 0.2126 + gi * 0.7152 + bi * 0.0722,
+            ri * 0.0193 + gi * 0.1192 + bi * 0.9505,
+        ];
+    }
+    static xyzToLab(x, y, z) {
+        let xi = x / 95.047;
+        let yi = y / 100;
+        let zi = z / 108.883;
+        if (xi > 0.008856) {
+            xi = Math.pow(xi, 1 / 3);
+        }
+        else {
+            xi = 7.787 * xi + 16 / 116;
+        }
+        if (yi > 0.008856) {
+            yi = Math.pow(yi, 1 / 3);
+        }
+        else {
+            yi = 7.787 * yi + 16 / 116;
+        }
+        if (zi > 0.008856) {
+            zi = Math.pow(zi, 1 / 3);
+        }
+        else {
+            zi = 7.787 * zi + 16 / 116;
+        }
+        return [116 * yi - 16, 500 * (xi - yi), 200 * (yi - zi)];
+    }
+    static rgbToLab(r, g, b) {
+        let ri = r / 255;
+        let gi = g / 255;
+        let bi = b / 255;
+        if (ri > 0.04045) {
+            ri = Math.pow((ri + 0.055) / 1.055, 2.4);
+        }
+        else {
+            ri /= 12.92;
+        }
+        if (gi > 0.04045) {
+            gi = Math.pow((gi + 0.055) / 1.055, 2.4);
+        }
+        else {
+            gi /= 12.92;
+        }
+        if (bi > 0.04045) {
+            bi = Math.pow((bi + 0.055) / 1.055, 2.4);
+        }
+        else {
+            bi /= 12.92;
+        }
+        ri *= 100;
+        gi *= 100;
+        bi *= 100;
+        let x = ri * 0.4124 + gi * 0.3576 + bi * 0.1805;
+        let y = ri * 0.2126 + gi * 0.7152 + bi * 0.0722;
+        let z = ri * 0.0193 + gi * 0.1192 + bi * 0.9505;
+        x /= 95.047;
+        y /= 100.0;
+        z /= 108.883;
+        if (x > 0.008856) {
+            x = Math.pow(x, 1 / 3.0);
+        }
+        else {
+            x = 7.787 * x + 16 / 116;
+        }
+        if (y > 0.008856) {
+            y = Math.pow(y, 1 / 3);
+        }
+        else {
+            y = 7.787 * y + 16 / 116;
+        }
+        if (z > 0.008856) {
+            z = Math.pow(z, 1 / 3);
+        }
+        else {
+            z = 7.787 * z + 16 / 116;
+        }
+        return [116 * y - 16, 500 * (x - y), 200 * (y - z)];
+    }
+}
+//# sourceMappingURL=color.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/exif/exif-entry.js
+class ExifEntry {
+    constructor(tag, value) {
+        this._tag = tag;
+        this._value = value;
+    }
+    get tag() {
+        return this._tag;
+    }
+    get value() {
+        return this._value;
+    }
+    set value(v) {
+        this._value = v;
+    }
+}
+//# sourceMappingURL=exif-entry.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/common/rational.js
+
+class Rational {
+    constructor(numerator, denominator) {
+        this._numerator = numerator;
+        this._denominator = denominator;
+    }
+    get numerator() {
+        return this._numerator;
+    }
+    get denominator() {
+        return this._denominator;
+    }
+    get asInt() {
+        return this.denominator !== 0
+            ? Math.trunc(this.numerator / this.denominator)
+            : 0;
+    }
+    get asDouble() {
+        return this.denominator !== 0 ? this.numerator / this.denominator : 0;
+    }
+    simplify() {
+        const d = MathOperators.gcd(this.numerator, this.denominator);
+        if (d !== 0) {
+            this._numerator = Math.trunc(this.numerator / d);
+            this._denominator = Math.trunc(this.denominator / d);
+        }
+    }
+    equalsTo(other) {
+        return (other instanceof Rational &&
+            this._numerator === other._numerator &&
+            this._denominator === other._denominator);
+    }
+    toString() {
+        return `${this._numerator}/${this._denominator}`;
+    }
+}
+//# sourceMappingURL=rational.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/exif/exif-ifd-container.js
+
+class ExifIFDContainer {
+    constructor(directories) {
+        this.directories = directories !== null && directories !== void 0 ? directories : new Map();
+    }
+    get keys() {
+        return this.directories.keys();
+    }
+    get values() {
+        return this.directories.values();
+    }
+    get size() {
+        return this.directories.size;
+    }
+    get isEmpty() {
+        if (this.directories.size === 0) {
+            return true;
+        }
+        for (const ifd of this.directories.values()) {
+            if (!ifd.isEmpty) {
+                return false;
+            }
+        }
+        return true;
+    }
+    static from(other) {
+        return new ExifIFDContainer(other.directories);
+    }
+    has(key) {
+        return this.directories.has(key);
+    }
+    get(ifdName) {
+        let ifd = this.directories.get(ifdName);
+        if (ifd === undefined) {
+            ifd = new ExifIFD();
+            this.directories.set(ifdName, ifd);
+            return ifd;
+        }
+        else {
+            return ifd;
+        }
+    }
+    set(ifdName, value) {
+        this.directories.set(ifdName, value);
+    }
+    clear() {
+        this.directories.clear();
+    }
+}
+//# sourceMappingURL=exif-ifd-container.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/exif/exif-value-type.js
+var ExifValueType;
+(function (ExifValueType) {
+    ExifValueType[ExifValueType["none"] = 0] = "none";
+    ExifValueType[ExifValueType["byte"] = 1] = "byte";
+    ExifValueType[ExifValueType["ascii"] = 2] = "ascii";
+    ExifValueType[ExifValueType["short"] = 3] = "short";
+    ExifValueType[ExifValueType["long"] = 4] = "long";
+    ExifValueType[ExifValueType["rational"] = 5] = "rational";
+    ExifValueType[ExifValueType["sbyte"] = 6] = "sbyte";
+    ExifValueType[ExifValueType["undefined"] = 7] = "undefined";
+    ExifValueType[ExifValueType["sshort"] = 8] = "sshort";
+    ExifValueType[ExifValueType["slong"] = 9] = "slong";
+    ExifValueType[ExifValueType["srational"] = 10] = "srational";
+    ExifValueType[ExifValueType["single"] = 11] = "single";
+    ExifValueType[ExifValueType["double"] = 12] = "double";
+})(ExifValueType || (ExifValueType = {}));
+const ExifValueTypeString = [
+    'None',
+    'Byte',
+    'Ascii',
+    'Short',
+    'Long',
+    'Rational',
+    'SByte',
+    'Undefined',
+    'SShort',
+    'SLong',
+    'SRational',
+    'Single',
+    'Double',
+];
+const ExifValueTypeSize = [0, 1, 1, 2, 4, 8, 1, 1, 2, 4, 8, 4, 8];
+function getExifValueTypeString(type) {
+    return ExifValueTypeString[type];
+}
+function getExifValueTypeSize(type, length = 1) {
+    return ExifValueTypeSize[type] * length;
+}
+//# sourceMappingURL=exif-value-type.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/exif/exif-tag.js
+
+class ExifTag {
+    constructor(options) {
+        var _a, _b;
+        this._name = options.name;
+        this._type = (_a = options.type) !== null && _a !== void 0 ? _a : ExifValueType.none;
+        this._count = (_b = options.count) !== null && _b !== void 0 ? _b : 1;
+    }
+    get name() {
+        return this._name;
+    }
+    get type() {
+        return this._type;
+    }
+    get count() {
+        return this._count;
+    }
+}
+const ExifTagNameToID = new Map([
+    ['ProcessingSoftware', 0xb],
+    ['SubfileType', 0xfe],
+    ['OldSubfileType', 0xff],
+    ['ImageWidth', 0x100],
+    ['ImageLength', 0x101],
+    ['ImageHeight', 0x101],
+    ['BitsPerSample', 0x102],
+    ['Compression', 0x103],
+    ['PhotometricInterpretation', 0x106],
+    ['Thresholding', 0x107],
+    ['CellWidth', 0x108],
+    ['CellLength', 0x109],
+    ['FillOrder', 0x10a],
+    ['DocumentName', 0x10d],
+    ['ImageDescription', 0x10e],
+    ['Make', 0x10f],
+    ['Model', 0x110],
+    ['StripOffsets', 0x111],
+    ['Orientation', 0x112],
+    ['SamplesPerPixel', 0x115],
+    ['RowsPerStrip', 0x116],
+    ['StripByteCounts', 0x117],
+    ['MinSampleValue', 0x118],
+    ['MaxSampleValue', 0x119],
+    ['XResolution', 0x11a],
+    ['YResolution', 0x11b],
+    ['PlanarConfiguration', 0x11c],
+    ['PageName', 0x11d],
+    ['XPosition', 0x11e],
+    ['YPosition', 0x11f],
+    ['GrayResponseUnit', 0x122],
+    ['GrayResponseCurve', 0x123],
+    ['T4Options', 0x124],
+    ['T6Options', 0x125],
+    ['ResolutionUnit', 0x128],
+    ['PageNumber', 0x129],
+    ['ColorResponseUnit', 0x12c],
+    ['TransferFunction', 0x12d],
+    ['Software', 0x131],
+    ['DateTime', 0x132],
+    ['Artist', 0x13b],
+    ['HostComputer', 0x13c],
+    ['Predictor', 0x13d],
+    ['WhitePoint', 0x13e],
+    ['PrimaryChromaticities', 0x13f],
+    ['ColorMap', 0x140],
+    ['HalftoneHints', 0x141],
+    ['TileWidth', 0x142],
+    ['TileLength', 0x143],
+    ['TileOffsets', 0x144],
+    ['TileByteCounts', 0x145],
+    ['BadFaxLines', 0x146],
+    ['CleanFaxData', 0x147],
+    ['ConsecutiveBadFaxLines', 0x148],
+    ['InkSet', 0x14c],
+    ['InkNames', 0x14d],
+    ['NumberofInks', 0x14e],
+    ['DotRange', 0x150],
+    ['TargetPrinter', 0x151],
+    ['ExtraSamples', 0x152],
+    ['SampleFormat', 0x153],
+    ['SMinSampleValue', 0x154],
+    ['SMaxSampleValue', 0x155],
+    ['TransferRange', 0x156],
+    ['ClipPath', 0x157],
+    ['JPEGProc', 0x200],
+    ['JPEGInterchangeFormat', 0x201],
+    ['JPEGInterchangeFormatLength', 0x202],
+    ['YCbCrCoefficients', 0x211],
+    ['YCbCrSubSampling', 0x212],
+    ['YCbCrPositioning', 0x213],
+    ['ReferenceBlackWhite', 0x214],
+    ['ApplicationNotes', 0x2bc],
+    ['Rating', 0x4746],
+    ['CFARepeatPatternDim', 0x828d],
+    ['CFAPattern', 0x828e],
+    ['BatteryLevel', 0x828f],
+    ['Copyright', 0x8298],
+    ['ExposureTime', 0x829a],
+    ['FNumber', 0x829d],
+    ['IPTC-NAA', 0x83bb],
+    ['ExifOffset', 0x8769],
+    ['InterColorProfile', 0x8773],
+    ['ExposureProgram', 0x8822],
+    ['SpectralSensitivity', 0x8824],
+    ['GPSOffset', 0x8825],
+    ['ISOSpeed', 0x8827],
+    ['OECF', 0x8828],
+    ['SensitivityType', 0x8830],
+    ['RecommendedExposureIndex', 0x8832],
+    ['ExifVersion', 0x9000],
+    ['DateTimeOriginal', 0x9003],
+    ['DateTimeDigitized', 0x9004],
+    ['OffsetTime', 0x9010],
+    ['OffsetTimeOriginal', 0x9011],
+    ['OffsetTimeDigitized', 0x9012],
+    ['ComponentsConfiguration', 0x9101],
+    ['CompressedBitsPerPixel', 0x9102],
+    ['ShutterSpeedValue', 0x9201],
+    ['ApertureValue', 0x9202],
+    ['BrightnessValue', 0x9203],
+    ['ExposureBiasValue', 0x9204],
+    ['MaxApertureValue', 0x9205],
+    ['SubjectDistance', 0x9206],
+    ['MeteringMode', 0x9207],
+    ['LightSource', 0x9208],
+    ['Flash', 0x9209],
+    ['FocalLength', 0x920a],
+    ['SubjectArea', 0x9214],
+    ['MakerNote', 0x927c],
+    ['UserComment', 0x9286],
+    ['SubSecTime', 0x9290],
+    ['SubSecTimeOriginal', 0x9291],
+    ['SubSecTimeDigitized', 0x9292],
+    ['XPTitle', 0x9c9b],
+    ['XPComment', 0x9c9c],
+    ['XPAuthor', 0x9c9d],
+    ['XPKeywords', 0x9c9e],
+    ['XPSubject', 0x9c9f],
+    ['FlashPixVersion', 0xa000],
+    ['ColorSpace', 0xa001],
+    ['ExifImageWidth', 0xa002],
+    ['ExifImageLength', 0xa003],
+    ['RelatedSoundFile', 0xa004],
+    ['InteroperabilityOffset', 0xa005],
+    ['FlashEnergy', 0xa20b],
+    ['SpatialFrequencyResponse', 0xa20c],
+    ['FocalPlaneXResolution', 0xa20e],
+    ['FocalPlaneYResolution', 0xa20f],
+    ['FocalPlaneResolutionUnit', 0xa210],
+    ['SubjectLocation', 0xa214],
+    ['ExposureIndex', 0xa215],
+    ['SensingMethod', 0xa217],
+    ['FileSource', 0xa300],
+    ['SceneType', 0xa301],
+    ['CVAPattern', 0xa302],
+    ['CustomRendered', 0xa401],
+    ['ExposureMode', 0xa402],
+    ['WhiteBalance', 0xa403],
+    ['DigitalZoomRatio', 0xa404],
+    ['FocalLengthIn35mmFilm', 0xa405],
+    ['SceneCaptureType', 0xa406],
+    ['GainControl', 0xa407],
+    ['Contrast', 0xa408],
+    ['Saturation', 0xa409],
+    ['Sharpness', 0xa40a],
+    ['DeviceSettingDescription', 0xa40b],
+    ['SubjectDistanceRange', 0xa40c],
+    ['ImageUniqueID', 0xa420],
+    ['CameraOwnerName', 0xa430],
+    ['BodySerialNumber', 0xa431],
+    ['LensSpecification', 0xa432],
+    ['LensMake', 0xa433],
+    ['LensModel', 0xa434],
+    ['LensSerialNumber', 0xa435],
+    ['Gamma', 0xa500],
+    ['PrintIM', 0xc4a5],
+    ['Padding', 0xea1c],
+    ['OffsetSchema', 0xea1d],
+    ['OwnerName', 0xfde8],
+    ['SerialNumber', 0xfde9],
+    ['InteropIndex', 0x1],
+    ['InteropVersion', 0x2],
+    ['RelatedImageFileFormat', 0x1000],
+    ['RelatedImageWidth', 0x1001],
+    ['RelatedImageLength', 0x1002],
+    ['GPSVersionID', 0x0],
+    ['GPSLatitudeRef', 0x1],
+    ['GPSLatitude', 0x2],
+    ['GPSLongitudeRef', 0x3],
+    ['GPSLongitude', 0x4],
+    ['GPSAltitudeRef', 0x5],
+    ['GPSAltitude', 0x6],
+    ['GPSTimeStamp', 0x7],
+    ['GPSSatellites', 0x8],
+    ['GPSStatus', 0x9],
+    ['GPSMeasureMode', 0xa],
+    ['GPSDOP', 0xb],
+    ['GPSSpeedRef', 0xc],
+    ['GPSSpeed', 0xd],
+    ['GPSTrackRef', 0xe],
+    ['GPSTrack', 0xf],
+    ['GPSImgDirectionRef', 0x10],
+    ['GPSImgDirection', 0x11],
+    ['GPSMapDatum', 0x12],
+    ['GPSDestLatitudeRef', 0x13],
+    ['GPSDestLatitude', 0x14],
+    ['GPSDestLongitudeRef', 0x15],
+    ['GPSDestLongitude', 0x16],
+    ['GPSDestBearingRef', 0x17],
+    ['GPSDestBearing', 0x18],
+    ['GPSDestDistanceRef', 0x19],
+    ['GPSDestDistance', 0x1a],
+    ['GPSProcessingMethod', 0x1b],
+    ['GPSAreaInformation', 0x1c],
+    ['GPSDate', 0x1d],
+    ['GPSDifferential', 0x1e],
+]);
+const ExifImageTags = new Map([
+    [
+        0x000b,
+        new ExifTag({
+            name: 'ProcessingSoftware',
+            type: ExifValueType.ascii,
+        }),
+    ],
+    [
+        0x00fe,
+        new ExifTag({
+            name: 'SubfileType',
+            type: ExifValueType.long,
+        }),
+    ],
+    [
+        0x00ff,
+        new ExifTag({
+            name: 'OldSubfileType',
+            type: ExifValueType.long,
+        }),
+    ],
+    [
+        0x0100,
+        new ExifTag({
+            name: 'ImageWidth',
+            type: ExifValueType.long,
+        }),
+    ],
+    [
+        0x0101,
+        new ExifTag({
+            name: 'ImageLength',
+            type: ExifValueType.long,
+        }),
+    ],
+    [
+        0x0102,
+        new ExifTag({
+            name: 'BitsPerSample',
+            type: ExifValueType.short,
+        }),
+    ],
+    [
+        0x0103,
+        new ExifTag({
+            name: 'Compression',
+            type: ExifValueType.short,
+        }),
+    ],
+    [
+        0x0106,
+        new ExifTag({
+            name: 'PhotometricInterpretation',
+            type: ExifValueType.short,
+        }),
+    ],
+    [
+        0x0107,
+        new ExifTag({
+            name: 'Thresholding',
+            type: ExifValueType.short,
+        }),
+    ],
+    [
+        0x0108,
+        new ExifTag({
+            name: 'CellWidth',
+            type: ExifValueType.short,
+        }),
+    ],
+    [
+        0x0109,
+        new ExifTag({
+            name: 'CellLength',
+            type: ExifValueType.short,
+        }),
+    ],
+    [
+        0x010a,
+        new ExifTag({
+            name: 'FillOrder',
+            type: ExifValueType.short,
+        }),
+    ],
+    [
+        0x010d,
+        new ExifTag({
+            name: 'DocumentName',
+            type: ExifValueType.ascii,
+        }),
+    ],
+    [
+        0x010e,
+        new ExifTag({
+            name: 'ImageDescription',
+            type: ExifValueType.ascii,
+        }),
+    ],
+    [
+        0x010f,
+        new ExifTag({
+            name: 'Make',
+            type: ExifValueType.ascii,
+        }),
+    ],
+    [
+        0x0110,
+        new ExifTag({
+            name: 'Model',
+            type: ExifValueType.ascii,
+        }),
+    ],
+    [
+        0x0111,
+        new ExifTag({
+            name: 'StripOffsets',
+            type: ExifValueType.long,
+        }),
+    ],
+    [
+        0x0112,
+        new ExifTag({
+            name: 'Orientation',
+            type: ExifValueType.short,
+        }),
+    ],
+    [
+        0x0115,
+        new ExifTag({
+            name: 'SamplesPerPixel',
+            type: ExifValueType.short,
+        }),
+    ],
+    [
+        0x0116,
+        new ExifTag({
+            name: 'RowsPerStrip',
+            type: ExifValueType.long,
+        }),
+    ],
+    [
+        0x0117,
+        new ExifTag({
+            name: 'StripByteCounts',
+            type: ExifValueType.long,
+        }),
+    ],
+    [
+        0x0118,
+        new ExifTag({
+            name: 'MinSampleValue',
+            type: ExifValueType.short,
+        }),
+    ],
+    [
+        0x0119,
+        new ExifTag({
+            name: 'MaxSampleValue',
+            type: ExifValueType.short,
+        }),
+    ],
+    [
+        0x011a,
+        new ExifTag({
+            name: 'XResolution',
+            type: ExifValueType.rational,
+        }),
+    ],
+    [
+        0x011b,
+        new ExifTag({
+            name: 'YResolution',
+            type: ExifValueType.rational,
+        }),
+    ],
+    [
+        0x011c,
+        new ExifTag({
+            name: 'PlanarConfiguration',
+            type: ExifValueType.short,
+        }),
+    ],
+    [
+        0x011d,
+        new ExifTag({
+            name: 'PageName',
+            type: ExifValueType.ascii,
+        }),
+    ],
+    [
+        0x011e,
+        new ExifTag({
+            name: 'XPosition',
+            type: ExifValueType.rational,
+        }),
+    ],
+    [
+        0x011f,
+        new ExifTag({
+            name: 'YPosition',
+            type: ExifValueType.rational,
+        }),
+    ],
+    [
+        0x0122,
+        new ExifTag({
+            name: 'GrayResponseUnit',
+            type: ExifValueType.short,
+        }),
+    ],
+    [
+        0x0123,
+        new ExifTag({
+            name: 'GrayResponseCurve',
+        }),
+    ],
+    [
+        0x0124,
+        new ExifTag({
+            name: 'T4Options',
+        }),
+    ],
+    [
+        0x0125,
+        new ExifTag({
+            name: 'T6Options',
+        }),
+    ],
+    [
+        0x0128,
+        new ExifTag({
+            name: 'ResolutionUnit',
+            type: ExifValueType.short,
+        }),
+    ],
+    [
+        0x0129,
+        new ExifTag({
+            name: 'PageNumber',
+            type: ExifValueType.short,
+            count: 2,
+        }),
+    ],
+    [
+        0x012c,
+        new ExifTag({
+            name: 'ColorResponseUnit',
+        }),
+    ],
+    [
+        0x012d,
+        new ExifTag({
+            name: 'TransferFunction',
+            type: ExifValueType.short,
+            count: 768,
+        }),
+    ],
+    [
+        0x0131,
+        new ExifTag({
+            name: 'Software',
+            type: ExifValueType.ascii,
+        }),
+    ],
+    [
+        0x0132,
+        new ExifTag({
+            name: 'DateTime',
+            type: ExifValueType.ascii,
+        }),
+    ],
+    [
+        0x013b,
+        new ExifTag({
+            name: 'Artist',
+            type: ExifValueType.ascii,
+        }),
+    ],
+    [
+        0x013c,
+        new ExifTag({
+            name: 'HostComputer',
+            type: ExifValueType.ascii,
+        }),
+    ],
+    [
+        0x013d,
+        new ExifTag({
+            name: 'Predictor',
+            type: ExifValueType.short,
+        }),
+    ],
+    [
+        0x013e,
+        new ExifTag({
+            name: 'WhitePoint',
+            type: ExifValueType.rational,
+            count: 2,
+        }),
+    ],
+    [
+        0x013f,
+        new ExifTag({
+            name: 'PrimaryChromaticities',
+            type: ExifValueType.rational,
+            count: 6,
+        }),
+    ],
+    [
+        0x0140,
+        new ExifTag({
+            name: 'ColorMap',
+        }),
+    ],
+    [
+        0x0141,
+        new ExifTag({
+            name: 'HalftoneHints',
+            type: ExifValueType.short,
+            count: 2,
+        }),
+    ],
+    [
+        0x0142,
+        new ExifTag({
+            name: 'TileWidth',
+            type: ExifValueType.long,
+        }),
+    ],
+    [
+        0x0143,
+        new ExifTag({
+            name: 'TileLength',
+            type: ExifValueType.long,
+        }),
+    ],
+    [
+        0x0144,
+        new ExifTag({
+            name: 'TileOffsets',
+        }),
+    ],
+    [
+        0x0145,
+        new ExifTag({
+            name: 'TileByteCounts',
+        }),
+    ],
+    [
+        0x0146,
+        new ExifTag({
+            name: 'BadFaxLines',
+        }),
+    ],
+    [
+        0x0147,
+        new ExifTag({
+            name: 'CleanFaxData',
+        }),
+    ],
+    [
+        0x0148,
+        new ExifTag({
+            name: 'ConsecutiveBadFaxLines',
+        }),
+    ],
+    [
+        0x014c,
+        new ExifTag({
+            name: 'InkSet',
+        }),
+    ],
+    [
+        0x014d,
+        new ExifTag({
+            name: 'InkNames',
+        }),
+    ],
+    [
+        0x014e,
+        new ExifTag({
+            name: 'NumberofInks',
+        }),
+    ],
+    [
+        0x0150,
+        new ExifTag({
+            name: 'DotRange',
+        }),
+    ],
+    [
+        0x0151,
+        new ExifTag({
+            name: 'TargetPrinter',
+            type: ExifValueType.ascii,
+        }),
+    ],
+    [
+        0x0152,
+        new ExifTag({
+            name: 'ExtraSamples',
+        }),
+    ],
+    [
+        0x0153,
+        new ExifTag({
+            name: 'SampleFormat',
+        }),
+    ],
+    [
+        0x0154,
+        new ExifTag({
+            name: 'SMinSampleValue',
+        }),
+    ],
+    [
+        0x0155,
+        new ExifTag({
+            name: 'SMaxSampleValue',
+        }),
+    ],
+    [
+        0x0156,
+        new ExifTag({
+            name: 'TransferRange',
+        }),
+    ],
+    [
+        0x0157,
+        new ExifTag({
+            name: 'ClipPath',
+        }),
+    ],
+    [
+        0x0200,
+        new ExifTag({
+            name: 'JPEGProc',
+        }),
+    ],
+    [
+        0x0201,
+        new ExifTag({
+            name: 'JPEGInterchangeFormat',
+        }),
+    ],
+    [
+        0x0202,
+        new ExifTag({
+            name: 'JPEGInterchangeFormatLength',
+        }),
+    ],
+    [
+        0x0211,
+        new ExifTag({
+            name: 'YCbCrCoefficients',
+            type: ExifValueType.rational,
+            count: 3,
+        }),
+    ],
+    [
+        0x0212,
+        new ExifTag({
+            name: 'YCbCrSubSampling',
+            type: ExifValueType.short,
+        }),
+    ],
+    [
+        0x0213,
+        new ExifTag({
+            name: 'YCbCrPositioning',
+            type: ExifValueType.short,
+        }),
+    ],
+    [
+        0x0214,
+        new ExifTag({
+            name: 'ReferenceBlackWhite',
+            type: ExifValueType.rational,
+            count: 6,
+        }),
+    ],
+    [
+        0x02bc,
+        new ExifTag({
+            name: 'ApplicationNotes',
+            type: ExifValueType.short,
+        }),
+    ],
+    [
+        0x4746,
+        new ExifTag({
+            name: 'Rating',
+            type: ExifValueType.short,
+        }),
+    ],
+    [
+        0x828d,
+        new ExifTag({
+            name: 'CFARepeatPatternDim',
+        }),
+    ],
+    [
+        0x828e,
+        new ExifTag({
+            name: 'CFAPattern',
+        }),
+    ],
+    [
+        0x828f,
+        new ExifTag({
+            name: 'BatteryLevel',
+        }),
+    ],
+    [
+        0x8298,
+        new ExifTag({
+            name: 'Copyright',
+            type: ExifValueType.ascii,
+        }),
+    ],
+    [
+        0x829a,
+        new ExifTag({
+            name: 'ExposureTime',
+            type: ExifValueType.rational,
+        }),
+    ],
+    [
+        0x829d,
+        new ExifTag({
+            name: 'FNumber',
+            type: ExifValueType.rational,
+        }),
+    ],
+    [
+        0x83bb,
+        new ExifTag({
+            name: 'IPTC-NAA',
+            type: ExifValueType.long,
+        }),
+    ],
+    [
+        0x8769,
+        new ExifTag({
+            name: 'ExifOffset',
+        }),
+    ],
+    [
+        0x8773,
+        new ExifTag({
+            name: 'InterColorProfile',
+        }),
+    ],
+    [
+        0x8822,
+        new ExifTag({
+            name: 'ExposureProgram',
+            type: ExifValueType.short,
+        }),
+    ],
+    [
+        0x8824,
+        new ExifTag({
+            name: 'SpectralSensitivity',
+            type: ExifValueType.ascii,
+        }),
+    ],
+    [
+        0x8825,
+        new ExifTag({
+            name: 'GPSOffset',
+        }),
+    ],
+    [
+        0x8827,
+        new ExifTag({
+            name: 'ISOSpeed',
+            type: ExifValueType.long,
+        }),
+    ],
+    [
+        0x8828,
+        new ExifTag({
+            name: 'OECF',
+        }),
+    ],
+    [
+        0x8830,
+        new ExifTag({
+            name: 'SensitivityType',
+            type: ExifValueType.short,
+        }),
+    ],
+    [
+        0x8832,
+        new ExifTag({
+            name: 'RecommendedExposureIndex',
+            type: ExifValueType.long,
+        }),
+    ],
+    [
+        0x8833,
+        new ExifTag({
+            name: 'ISOSpeed',
+            type: ExifValueType.long,
+        }),
+    ],
+    [
+        0x9000,
+        new ExifTag({
+            name: 'ExifVersion',
+            type: ExifValueType.undefined,
+        }),
+    ],
+    [
+        0x9003,
+        new ExifTag({
+            name: 'DateTimeOriginal',
+            type: ExifValueType.ascii,
+        }),
+    ],
+    [
+        0x9004,
+        new ExifTag({
+            name: 'DateTimeDigitized',
+            type: ExifValueType.ascii,
+        }),
+    ],
+    [
+        0x9010,
+        new ExifTag({
+            name: 'OffsetTime',
+            type: ExifValueType.ascii,
+        }),
+    ],
+    [
+        0x9011,
+        new ExifTag({
+            name: 'OffsetTimeOriginal',
+            type: ExifValueType.ascii,
+        }),
+    ],
+    [
+        0x9012,
+        new ExifTag({
+            name: 'OffsetTimeDigitized',
+            type: ExifValueType.ascii,
+        }),
+    ],
+    [
+        0x9101,
+        new ExifTag({
+            name: 'ComponentsConfiguration',
+        }),
+    ],
+    [
+        0x9102,
+        new ExifTag({
+            name: 'CompressedBitsPerPixel',
+        }),
+    ],
+    [
+        0x9201,
+        new ExifTag({
+            name: 'ShutterSpeedValue',
+        }),
+    ],
+    [
+        0x9202,
+        new ExifTag({
+            name: 'ApertureValue',
+        }),
+    ],
+    [
+        0x9203,
+        new ExifTag({
+            name: 'BrightnessValue',
+        }),
+    ],
+    [
+        0x9204,
+        new ExifTag({
+            name: 'ExposureBiasValue',
+        }),
+    ],
+    [
+        0x9205,
+        new ExifTag({
+            name: 'MaxApertureValue',
+        }),
+    ],
+    [
+        0x9206,
+        new ExifTag({
+            name: 'SubjectDistance',
+        }),
+    ],
+    [
+        0x9207,
+        new ExifTag({
+            name: 'MeteringMode',
+        }),
+    ],
+    [
+        0x9208,
+        new ExifTag({
+            name: 'LightSource',
+        }),
+    ],
+    [
+        0x9209,
+        new ExifTag({
+            name: 'Flash',
+        }),
+    ],
+    [
+        0x920a,
+        new ExifTag({
+            name: 'FocalLength',
+        }),
+    ],
+    [
+        0x9214,
+        new ExifTag({
+            name: 'SubjectArea',
+        }),
+    ],
+    [
+        0x927c,
+        new ExifTag({
+            name: 'MakerNote',
+        }),
+    ],
+    [
+        0x9286,
+        new ExifTag({
+            name: 'UserComment',
+        }),
+    ],
+    [
+        0x9290,
+        new ExifTag({
+            name: 'SubSecTime',
+        }),
+    ],
+    [
+        0x9291,
+        new ExifTag({
+            name: 'SubSecTimeOriginal',
+        }),
+    ],
+    [
+        0x9292,
+        new ExifTag({
+            name: 'SubSecTimeDigitized',
+        }),
+    ],
+    [
+        0x9c9b,
+        new ExifTag({
+            name: 'XPTitle',
+        }),
+    ],
+    [
+        0x9c9c,
+        new ExifTag({
+            name: 'XPComment',
+        }),
+    ],
+    [
+        0x9c9d,
+        new ExifTag({
+            name: 'XPAuthor',
+        }),
+    ],
+    [
+        0x9c9e,
+        new ExifTag({
+            name: 'XPKeywords',
+        }),
+    ],
+    [
+        0x9c9f,
+        new ExifTag({
+            name: 'XPSubject',
+        }),
+    ],
+    [
+        0xa000,
+        new ExifTag({
+            name: 'FlashPixVersion',
+        }),
+    ],
+    [
+        0xa001,
+        new ExifTag({
+            name: 'ColorSpace',
+            type: ExifValueType.short,
+        }),
+    ],
+    [
+        0xa002,
+        new ExifTag({
+            name: 'ExifImageWidth',
+            type: ExifValueType.short,
+        }),
+    ],
+    [
+        0xa003,
+        new ExifTag({
+            name: 'ExifImageLength',
+            type: ExifValueType.short,
+        }),
+    ],
+    [
+        0xa004,
+        new ExifTag({
+            name: 'RelatedSoundFile',
+        }),
+    ],
+    [
+        0xa005,
+        new ExifTag({
+            name: 'InteroperabilityOffset',
+        }),
+    ],
+    [
+        0xa20b,
+        new ExifTag({
+            name: 'FlashEnergy',
+        }),
+    ],
+    [
+        0xa20c,
+        new ExifTag({
+            name: 'SpatialFrequencyResponse',
+        }),
+    ],
+    [
+        0xa20e,
+        new ExifTag({
+            name: 'FocalPlaneXResolution',
+        }),
+    ],
+    [
+        0xa20f,
+        new ExifTag({
+            name: 'FocalPlaneYResolution',
+        }),
+    ],
+    [
+        0xa210,
+        new ExifTag({
+            name: 'FocalPlaneResolutionUnit',
+        }),
+    ],
+    [
+        0xa214,
+        new ExifTag({
+            name: 'SubjectLocation',
+        }),
+    ],
+    [
+        0xa215,
+        new ExifTag({
+            name: 'ExposureIndex',
+        }),
+    ],
+    [
+        0xa217,
+        new ExifTag({
+            name: 'SensingMethod',
+        }),
+    ],
+    [
+        0xa300,
+        new ExifTag({
+            name: 'FileSource',
+        }),
+    ],
+    [
+        0xa301,
+        new ExifTag({
+            name: 'SceneType',
+        }),
+    ],
+    [
+        0xa302,
+        new ExifTag({
+            name: 'CVAPattern',
+        }),
+    ],
+    [
+        0xa401,
+        new ExifTag({
+            name: 'CustomRendered',
+        }),
+    ],
+    [
+        0xa402,
+        new ExifTag({
+            name: 'ExposureMode',
+        }),
+    ],
+    [
+        0xa403,
+        new ExifTag({
+            name: 'WhiteBalance',
+        }),
+    ],
+    [
+        0xa404,
+        new ExifTag({
+            name: 'DigitalZoomRatio',
+        }),
+    ],
+    [
+        0xa405,
+        new ExifTag({
+            name: 'FocalLengthIn35mmFilm',
+        }),
+    ],
+    [
+        0xa406,
+        new ExifTag({
+            name: 'SceneCaptureType',
+        }),
+    ],
+    [
+        0xa407,
+        new ExifTag({
+            name: 'GainControl',
+        }),
+    ],
+    [
+        0xa408,
+        new ExifTag({
+            name: 'Contrast',
+        }),
+    ],
+    [
+        0xa409,
+        new ExifTag({
+            name: 'Saturation',
+        }),
+    ],
+    [
+        0xa40a,
+        new ExifTag({
+            name: 'Sharpness',
+        }),
+    ],
+    [
+        0xa40b,
+        new ExifTag({
+            name: 'DeviceSettingDescription',
+        }),
+    ],
+    [
+        0xa40c,
+        new ExifTag({
+            name: 'SubjectDistanceRange',
+        }),
+    ],
+    [
+        0xa420,
+        new ExifTag({
+            name: 'ImageUniqueID',
+        }),
+    ],
+    [
+        0xa430,
+        new ExifTag({
+            name: 'CameraOwnerName',
+            type: ExifValueType.ascii,
+        }),
+    ],
+    [
+        0xa431,
+        new ExifTag({
+            name: 'BodySerialNumber',
+            type: ExifValueType.ascii,
+        }),
+    ],
+    [
+        0xa432,
+        new ExifTag({
+            name: 'LensSpecification',
+        }),
+    ],
+    [
+        0xa433,
+        new ExifTag({
+            name: 'LensMake',
+            type: ExifValueType.ascii,
+        }),
+    ],
+    [
+        0xa434,
+        new ExifTag({
+            name: 'LensModel',
+            type: ExifValueType.ascii,
+        }),
+    ],
+    [
+        0xa435,
+        new ExifTag({
+            name: 'LensSerialNumber',
+            type: ExifValueType.ascii,
+        }),
+    ],
+    [
+        0xa500,
+        new ExifTag({
+            name: 'Gamma',
+            type: ExifValueType.rational,
+        }),
+    ],
+    [
+        0xc4a5,
+        new ExifTag({
+            name: 'PrintIM',
+        }),
+    ],
+    [
+        0xea1c,
+        new ExifTag({
+            name: 'Padding',
+        }),
+    ],
+    [
+        0xea1d,
+        new ExifTag({
+            name: 'OffsetSchema',
+        }),
+    ],
+    [
+        0xfde8,
+        new ExifTag({
+            name: 'OwnerName',
+            type: ExifValueType.ascii,
+        }),
+    ],
+    [
+        0xfde9,
+        new ExifTag({
+            name: 'SerialNumber',
+            type: ExifValueType.ascii,
+        }),
+    ],
+]);
+const ExifInteropTags = new Map([
+    [
+        0x0001,
+        new ExifTag({
+            name: 'InteropIndex',
+            type: ExifValueType.ascii,
+        }),
+    ],
+    [
+        0x0002,
+        new ExifTag({
+            name: 'InteropVersion',
+            type: ExifValueType.undefined,
+        }),
+    ],
+    [
+        0x1000,
+        new ExifTag({
+            name: 'RelatedImageFileFormat',
+            type: ExifValueType.ascii,
+        }),
+    ],
+    [
+        0x1001,
+        new ExifTag({
+            name: 'RelatedImageWidth',
+            type: ExifValueType.short,
+        }),
+    ],
+    [
+        0x1002,
+        new ExifTag({
+            name: 'RelatedImageLength',
+            type: ExifValueType.short,
+        }),
+    ],
+]);
+const ExifGpsTags = new Map([
+    [
+        0x0000,
+        new ExifTag({
+            name: 'GPSVersionID',
+        }),
+    ],
+    [
+        0x0001,
+        new ExifTag({
+            name: 'GPSLatitudeRef',
+        }),
+    ],
+    [
+        0x0002,
+        new ExifTag({
+            name: 'GPSLatitude',
+        }),
+    ],
+    [
+        0x0003,
+        new ExifTag({
+            name: 'GPSLongitudeRef',
+        }),
+    ],
+    [
+        0x0004,
+        new ExifTag({
+            name: 'GPSLongitude',
+        }),
+    ],
+    [
+        0x0005,
+        new ExifTag({
+            name: 'GPSAltitudeRef',
+        }),
+    ],
+    [
+        0x0006,
+        new ExifTag({
+            name: 'GPSAltitude',
+        }),
+    ],
+    [
+        0x0007,
+        new ExifTag({
+            name: 'GPSTimeStamp',
+        }),
+    ],
+    [
+        0x0008,
+        new ExifTag({
+            name: 'GPSSatellites',
+        }),
+    ],
+    [
+        0x0009,
+        new ExifTag({
+            name: 'GPSStatus',
+        }),
+    ],
+    [
+        0x000a,
+        new ExifTag({
+            name: 'GPSMeasureMode',
+        }),
+    ],
+    [
+        0x000b,
+        new ExifTag({
+            name: 'GPSDOP',
+        }),
+    ],
+    [
+        0x000c,
+        new ExifTag({
+            name: 'GPSSpeedRef',
+        }),
+    ],
+    [
+        0x000d,
+        new ExifTag({
+            name: 'GPSSpeed',
+        }),
+    ],
+    [
+        0x000e,
+        new ExifTag({
+            name: 'GPSTrackRef',
+        }),
+    ],
+    [
+        0x000f,
+        new ExifTag({
+            name: 'GPSTrack',
+        }),
+    ],
+    [
+        0x0010,
+        new ExifTag({
+            name: 'GPSImgDirectionRef',
+        }),
+    ],
+    [
+        0x0011,
+        new ExifTag({
+            name: 'GPSImgDirection',
+        }),
+    ],
+    [
+        0x0012,
+        new ExifTag({
+            name: 'GPSMapDatum',
+        }),
+    ],
+    [
+        0x0013,
+        new ExifTag({
+            name: 'GPSDestLatitudeRef',
+        }),
+    ],
+    [
+        0x0014,
+        new ExifTag({
+            name: 'GPSDestLatitude',
+        }),
+    ],
+    [
+        0x0015,
+        new ExifTag({
+            name: 'GPSDestLongitudeRef',
+        }),
+    ],
+    [
+        0x0016,
+        new ExifTag({
+            name: 'GPSDestLongitude',
+        }),
+    ],
+    [
+        0x0017,
+        new ExifTag({
+            name: 'GPSDestBearingRef',
+        }),
+    ],
+    [
+        0x0018,
+        new ExifTag({
+            name: 'GPSDestBearing',
+        }),
+    ],
+    [
+        0x0019,
+        new ExifTag({
+            name: 'GPSDestDistanceRef',
+        }),
+    ],
+    [
+        0x001a,
+        new ExifTag({
+            name: 'GPSDestDistance',
+        }),
+    ],
+    [
+        0x001b,
+        new ExifTag({
+            name: 'GPSProcessingMethod',
+        }),
+    ],
+    [
+        0x001c,
+        new ExifTag({
+            name: 'GPSAreaInformation',
+        }),
+    ],
+    [
+        0x001d,
+        new ExifTag({
+            name: 'GPSDate',
+        }),
+    ],
+    [
+        0x001e,
+        new ExifTag({
+            name: 'GPSDifferential',
+        }),
+    ],
+]);
+//# sourceMappingURL=exif-tag.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/exif/exif-value/exif-value.js
+
+
+
+class ExifValue {
+    get type() {
+        return ExifValueType.none;
+    }
+    get length() {
+        return 0;
+    }
+    get dataSize() {
+        return getExifValueTypeSize(this.type, this.length);
+    }
+    get typeString() {
+        return getExifValueTypeString(this.type);
+    }
+    toBool(_index) {
+        return false;
+    }
+    toInt(_index) {
+        return 0;
+    }
+    toDouble(_index) {
+        return 0;
+    }
+    toRational(_index) {
+        return new Rational(0, 1);
+    }
+    toString() {
+        return '';
+    }
+    write(_out) { }
+    setBool(_v, _index) { }
+    setInt(_v, _index) { }
+    setDouble(_v, _index) { }
+    setRational(_numerator, _denomitator, _index) { }
+    setString(_v) { }
+    equalsTo(_other) {
+        return false;
+    }
+    clone() {
+        throw new ImageError('Cannot be copied.');
+    }
+}
+//# sourceMappingURL=exif-value.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/exif/exif-value/exif-ascii-value.js
+
+
+
+class ExifAsciiValue extends ExifValue {
+    constructor(value) {
+        super();
+        if (typeof value === 'string') {
+            this.value = value;
+        }
+        else {
+            this.value = String.fromCharCode(...value);
+        }
+    }
+    get type() {
+        return ExifValueType.ascii;
+    }
+    get length() {
+        return this.value.length;
+    }
+    static fromData(data, length) {
+        const value = length > 0 ? data.readString(length - 1) : data.readString();
+        return new ExifAsciiValue(value);
+    }
+    toData() {
+        return TextCodec.getCodePoints(this.value);
+    }
+    toString() {
+        return this.value;
+    }
+    write(out) {
+        const bytes = TextCodec.getCodePoints(this.value);
+        out.writeBytes(bytes);
+    }
+    setString(v) {
+        this.value = v;
+    }
+    equalsTo(other) {
+        return other instanceof ExifAsciiValue && this.length === other.length;
+    }
+    clone() {
+        return new ExifAsciiValue(this.value);
+    }
+}
+//# sourceMappingURL=exif-ascii-value.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/exif/exif-value/exif-byte-value.js
+
+
+class ExifByteValue extends ExifValue {
+    constructor(value) {
+        super();
+        if (typeof value === 'number') {
+            this.value = new Uint8Array(1);
+            this.value[0] = value;
+        }
+        else {
+            this.value = value;
+        }
+    }
+    get type() {
+        return ExifValueType.byte;
+    }
+    get length() {
+        return this.value.length;
+    }
+    static fromData(data, offset, length) {
+        const array = data.toUint8Array(offset, length);
+        return new ExifByteValue(array);
+    }
+    toInt(index = 0) {
+        return this.value[index];
+    }
+    toData() {
+        return this.value;
+    }
+    toString() {
+        return this.value.length === 1 ? `${this.value[0]}` : `${this.value}`;
+    }
+    write(out) {
+        out.writeBytes(this.value);
+    }
+    setInt(v, index = 0) {
+        this.value[index] = v;
+    }
+    equalsTo(other) {
+        return other instanceof ExifByteValue && this.length === other.length;
+    }
+    clone() {
+        return new ExifByteValue(this.value);
+    }
+}
+//# sourceMappingURL=exif-byte-value.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/exif/exif-value/exif-double-value.js
+
+
+class ExifDoubleValue extends ExifValue {
+    constructor(value) {
+        super();
+        if (typeof value === 'number') {
+            this.value = new Float64Array(1);
+            this.value[0] = value;
+        }
+        else {
+            this.value = value;
+        }
+    }
+    get type() {
+        return ExifValueType.double;
+    }
+    get length() {
+        return this.value.length;
+    }
+    static fromData(data, length) {
+        const array = new Float64Array(length);
+        for (let i = 0; i < length; ++i) {
+            array[i] = data.readFloat64();
+        }
+        return new ExifDoubleValue(array);
+    }
+    toDouble(index = 0) {
+        return this.value[index];
+    }
+    toData() {
+        return new Uint8Array(this.value.buffer);
+    }
+    toString() {
+        return this.value.length === 1 ? `${this.value[0]}` : `${this.value}`;
+    }
+    write(out) {
+        for (let i = 0, l = this.value.length; i < l; ++i) {
+            out.writeFloat64(this.value[i]);
+        }
+    }
+    setDouble(v, index = 0) {
+        this.value[index] = v;
+    }
+    equalsTo(other) {
+        return other instanceof ExifDoubleValue && this.length === other.length;
+    }
+    clone() {
+        return new ExifDoubleValue(this.value);
+    }
+}
+//# sourceMappingURL=exif-double-value.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/exif/exif-value/exif-long-value.js
+
+
+class ExifLongValue extends ExifValue {
+    constructor(value) {
+        super();
+        if (typeof value === 'number') {
+            this.value = new Uint32Array(1);
+            this.value[0] = value;
+        }
+        else {
+            this.value = value;
+        }
+    }
+    get type() {
+        return ExifValueType.long;
+    }
+    get length() {
+        return this.value.length;
+    }
+    static fromData(data, length) {
+        const array = new Uint32Array(length);
+        for (let i = 0; i < length; ++i) {
+            array[i] = data.readUint32();
+        }
+        return new ExifLongValue(array);
+    }
+    toInt(index = 0) {
+        return this.value[index];
+    }
+    toData() {
+        return new Uint8Array(this.value.buffer);
+    }
+    toString() {
+        return this.value.length === 1 ? `${this.value[0]}` : `${this.value}`;
+    }
+    write(out) {
+        for (let i = 0, l = this.value.length; i < l; ++i) {
+            out.writeUint32(this.value[i]);
+        }
+    }
+    setInt(v, index = 0) {
+        this.value[index] = v;
+    }
+    equalsTo(other) {
+        return other instanceof ExifLongValue && this.length === other.length;
+    }
+    clone() {
+        return new ExifLongValue(this.value);
+    }
+}
+//# sourceMappingURL=exif-long-value.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/exif/exif-value/exif-rational-value.js
+
+
+
+class ExifRationalValue extends ExifValue {
+    constructor(value) {
+        super();
+        if (value instanceof Rational) {
+            this.value = [value];
+        }
+        else {
+            this.value = value;
+        }
+    }
+    get type() {
+        return ExifValueType.rational;
+    }
+    get length() {
+        return this.value.length;
+    }
+    static fromData(data, length) {
+        const array = new Array();
+        for (let i = 0; i < length; i++) {
+            const r = new Rational(data.readUint32(), data.readUint32());
+            array.push(r);
+        }
+        return new ExifRationalValue(array);
+    }
+    static from(other) {
+        const r = new Rational(other.numerator, other.denominator);
+        return new ExifRationalValue(r);
+    }
+    toInt(index = 0) {
+        return this.value[index].asInt;
+    }
+    toDouble(index = 0) {
+        return this.value[index].asDouble;
+    }
+    toRational(index = 0) {
+        return this.value[index];
+    }
+    toString() {
+        return this.value.length === 1 ? `${this.value[0]}` : `${this.value}`;
+    }
+    write(out) {
+        for (const v of this.value) {
+            out.writeUint32(v.numerator);
+            out.writeUint32(v.denominator);
+        }
+    }
+    setRational(numerator, denomitator, index = 0) {
+        this.value[index] = new Rational(numerator, denomitator);
+    }
+    equalsTo(other) {
+        return other instanceof ExifRationalValue && this.length === other.length;
+    }
+    clone() {
+        return new ExifRationalValue(this.value);
+    }
+}
+//# sourceMappingURL=exif-rational-value.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/exif/exif-value/exif-sbyte-value.js
+
+
+class ExifSByteValue extends ExifValue {
+    constructor(value) {
+        super();
+        if (typeof value === 'number') {
+            this.value = new Int8Array(1);
+            this.value[0] = value;
+        }
+        else {
+            this.value = value;
+        }
+    }
+    get type() {
+        return ExifValueType.sbyte;
+    }
+    get length() {
+        return this.value.length;
+    }
+    static fromData(data, offset, length) {
+        const array = new Int8Array(new Int8Array(data.toUint8Array(offset, length).buffer));
+        return new ExifSByteValue(array);
+    }
+    toInt(index = 0) {
+        return this.value[index];
+    }
+    toData() {
+        return new Uint8Array(this.value.buffer);
+    }
+    toString() {
+        return this.value.length === 1 ? `${this.value[0]}` : `${this.value}`;
+    }
+    write(out) {
+        out.writeBytes(new Uint8Array(this.value.buffer));
+    }
+    setInt(v, index = 0) {
+        this.value[index] = v;
+    }
+    equalsTo(other) {
+        return other instanceof ExifSByteValue && this.length === other.length;
+    }
+    clone() {
+        return new ExifSByteValue(this.value);
+    }
+}
+//# sourceMappingURL=exif-sbyte-value.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/exif/exif-value/exif-short-value.js
+
+
+class ExifShortValue extends ExifValue {
+    constructor(value) {
+        super();
+        if (typeof value === 'number') {
+            this.value = new Uint16Array(1);
+            this.value[0] = value;
+        }
+        else {
+            this.value = value;
+        }
+    }
+    get type() {
+        return ExifValueType.short;
+    }
+    get length() {
+        return this.value.length;
+    }
+    static fromData(data, length) {
+        const array = new Uint16Array(length);
+        for (let i = 0; i < length; ++i) {
+            array[i] = data.readUint16();
+        }
+        return new ExifShortValue(array);
+    }
+    toInt(index = 0) {
+        return this.value[index];
+    }
+    toString() {
+        return this.value.length === 1 ? `${this.value[0]}` : `${this.value}`;
+    }
+    write(out) {
+        for (let i = 0, l = this.value.length; i < l; ++i) {
+            out.writeUint16(this.value[i]);
+        }
+    }
+    setInt(v, index = 0) {
+        this.value[index] = v;
+    }
+    equalsTo(other) {
+        return other instanceof ExifShortValue && this.length === other.length;
+    }
+    clone() {
+        return new ExifShortValue(this.value);
+    }
+}
+//# sourceMappingURL=exif-short-value.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/exif/exif-value/exif-single-value.js
+
+
+class ExifSingleValue extends ExifValue {
+    constructor(value) {
+        super();
+        if (typeof value === 'number') {
+            this.value = new Float32Array(1);
+            this.value[0] = value;
+        }
+        else {
+            this.value = value;
+        }
+    }
+    get type() {
+        return ExifValueType.single;
+    }
+    get length() {
+        return this.value.length;
+    }
+    static fromData(data, length) {
+        const array = new Float32Array(length);
+        for (let i = 0; i < length; ++i) {
+            array[i] = data.readFloat32();
+        }
+        return new ExifSingleValue(array);
+    }
+    toDouble(index = 0) {
+        return this.value[index];
+    }
+    toData() {
+        return new Uint8Array(this.value.buffer);
+    }
+    toString() {
+        return this.value.length === 1 ? `${this.value[0]}` : `${this.value}`;
+    }
+    write(out) {
+        for (let i = 0, l = this.value.length; i < l; ++i) {
+            out.writeFloat32(this.value[i]);
+        }
+    }
+    setDouble(v, index = 0) {
+        this.value[index] = v;
+    }
+    equalsTo(other) {
+        return other instanceof ExifSingleValue && this.length === other.length;
+    }
+    clone() {
+        return new ExifSingleValue(this.value);
+    }
+}
+//# sourceMappingURL=exif-single-value.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/exif/exif-value/exif-slong-value.js
+
+
+
+class ExifSLongValue extends ExifValue {
+    constructor(value) {
+        super();
+        if (typeof value === 'number') {
+            this.value = new Int32Array(1);
+            this.value[0] = value;
+        }
+        else {
+            this.value = value;
+        }
+    }
+    get type() {
+        return ExifValueType.slong;
+    }
+    get length() {
+        return this.value.length;
+    }
+    static fromData(data, length) {
+        const array = new Int32Array(length);
+        for (let i = 0; i < length; ++i) {
+            array[i] = data.readInt32();
+        }
+        return new ExifSLongValue(array);
+    }
+    toInt(index = 0) {
+        return this.value[index];
+    }
+    toData() {
+        return new Uint8Array(this.value.buffer);
+    }
+    toString() {
+        return this.value.length === 1 ? `${this.value[0]}` : `${this.value}`;
+    }
+    write(out) {
+        for (let i = 0, l = this.value.length; i < l; ++i) {
+            out.writeUint32(BitOperators.toUint32(this.value[i]));
+        }
+    }
+    setInt(v, index = 0) {
+        this.value[index] = v;
+    }
+    equalsTo(other) {
+        return other instanceof ExifSLongValue && this.length === other.length;
+    }
+    clone() {
+        return new ExifSLongValue(this.value);
+    }
+}
+//# sourceMappingURL=exif-slong-value.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/exif/exif-value/exif-srational-value.js
+
+
+
+
+class ExifSRationalValue extends ExifValue {
+    constructor(value) {
+        super();
+        if (value instanceof Rational) {
+            this.value = [value];
+        }
+        else {
+            this.value = value;
+        }
+    }
+    get type() {
+        return ExifValueType.srational;
+    }
+    get length() {
+        return this.value.length;
+    }
+    static fromData(data, length) {
+        const array = new Array();
+        for (let i = 0; i < length; i++) {
+            const r = new Rational(data.readInt32(), data.readInt32());
+            array.push(r);
+        }
+        return new ExifSRationalValue(array);
+    }
+    static from(other) {
+        const r = new Rational(other.numerator, other.denominator);
+        return new ExifSRationalValue(r);
+    }
+    toInt(index = 0) {
+        return this.value[index].asInt;
+    }
+    toDouble(index = 0) {
+        return this.value[index].asDouble;
+    }
+    toRational(index = 0) {
+        return this.value[index];
+    }
+    toString() {
+        return this.value.length === 1 ? `${this.value[0]}` : `${this.value}`;
+    }
+    write(out) {
+        for (const v of this.value) {
+            out.writeUint32(BitOperators.toUint32(v.numerator));
+            out.writeUint32(BitOperators.toUint32(v.denominator));
+        }
+    }
+    setRational(numerator, denomitator, index = 0) {
+        this.value[index] = new Rational(numerator, denomitator);
+    }
+    equalsTo(other) {
+        return other instanceof ExifSRationalValue && this.length === other.length;
+    }
+    clone() {
+        return new ExifSRationalValue(this.value);
+    }
+}
+//# sourceMappingURL=exif-srational-value.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/exif/exif-value/exif-sshort-value.js
+
+
+class ExifSShortValue extends ExifValue {
+    constructor(value) {
+        super();
+        if (typeof value === 'number') {
+            this.value = new Int16Array(1);
+            this.value[0] = value;
+        }
+        else {
+            this.value = value;
+        }
+    }
+    get type() {
+        return ExifValueType.sshort;
+    }
+    get length() {
+        return this.value.length;
+    }
+    static fromData(data, length) {
+        const array = new Int16Array(length);
+        for (let i = 0; i < length; ++i) {
+            array[i] = data.readInt16();
+        }
+        return new ExifSShortValue(array);
+    }
+    toInt(index = 0) {
+        return this.value[index];
+    }
+    toData() {
+        return new Uint8Array(this.value.buffer);
+    }
+    toString() {
+        return this.value.length === 1 ? `${this.value[0]}` : `${this.value}`;
+    }
+    write(out) {
+        const v = new Int16Array(1);
+        const vb = new Uint16Array(v.buffer);
+        for (let i = 0, l = this.value.length; i < l; ++i) {
+            v[0] = this.value[i];
+            out.writeUint16(vb[0]);
+        }
+    }
+    setInt(v, index = 0) {
+        this.value[index] = v;
+    }
+    equalsTo(other) {
+        return other instanceof ExifSShortValue && this.length === other.length;
+    }
+    clone() {
+        return new ExifSShortValue(this.value);
+    }
+}
+//# sourceMappingURL=exif-sshort-value.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/exif/exif-value/exif-undefined-value.js
+
+
+class ExifUndefinedValue extends ExifValue {
+    constructor(value) {
+        super();
+        if (typeof value === 'number') {
+            this.value = new Uint8Array(1);
+            this.value[0] = value;
+        }
+        else {
+            this.value = value;
+        }
+    }
+    get type() {
+        return ExifValueType.undefined;
+    }
+    get length() {
+        return this.value.length;
+    }
+    static fromData(data, offset, length) {
+        const array = new Uint8Array(data.toUint8Array(offset, length));
+        return new ExifUndefinedValue(array);
+    }
+    toData() {
+        return this.value;
+    }
+    toString() {
+        return '<data>';
+    }
+    write(out) {
+        out.writeBytes(this.value);
+    }
+    equalsTo(other) {
+        return other instanceof ExifUndefinedValue && this.length === other.length;
+    }
+    clone() {
+        return new ExifUndefinedValue(this.value);
+    }
+}
+//# sourceMappingURL=exif-undefined-value.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/exif/exif-ifd.js
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+class ExifIFD {
+    constructor() {
+        this.data = new Map();
+        this._sub = new ExifIFDContainer();
+    }
+    get sub() {
+        return this._sub;
+    }
+    get keys() {
+        return this.data.keys();
+    }
+    get values() {
+        return this.data.values();
+    }
+    get size() {
+        return this.data.size;
+    }
+    get isEmpty() {
+        return this.data.size === 0 && this._sub.isEmpty;
+    }
+    get hasImageDescription() {
+        return this.data.has(0x010e);
+    }
+    get imageDescription() {
+        var _a;
+        return (_a = this.data.get(0x010e)) === null || _a === void 0 ? void 0 : _a.toString();
+    }
+    set imageDescription(v) {
+        if (v === undefined) {
+            this.data.delete(0x010e);
+        }
+        else {
+            this.data.set(0x010e, new ExifAsciiValue(v));
+        }
+    }
+    get hasMake() {
+        return this.data.has(0x010f);
+    }
+    get make() {
+        var _a;
+        return (_a = this.data.get(0x010f)) === null || _a === void 0 ? void 0 : _a.toString();
+    }
+    set make(v) {
+        if (v === undefined) {
+            this.data.delete(0x010f);
+        }
+        else {
+            this.data.set(0x010f, new ExifAsciiValue(v));
+        }
+    }
+    get hasModel() {
+        return this.data.has(0x0110);
+    }
+    get model() {
+        var _a;
+        return (_a = this.data.get(0x0110)) === null || _a === void 0 ? void 0 : _a.toString();
+    }
+    set model(v) {
+        if (v === undefined) {
+            this.data.delete(0x0110);
+        }
+        else {
+            this.data.set(0x0110, new ExifAsciiValue(v));
+        }
+    }
+    get hasOrientation() {
+        return this.data.has(0x0112);
+    }
+    get orientation() {
+        var _a;
+        return (_a = this.data.get(0x0112)) === null || _a === void 0 ? void 0 : _a.toInt();
+    }
+    set orientation(v) {
+        if (v === undefined) {
+            this.data.delete(0x0112);
+        }
+        else {
+            this.data.set(0x0112, new ExifShortValue(v));
+        }
+    }
+    get hasResolutionX() {
+        return this.data.has(0x011a);
+    }
+    get resolutionX() {
+        var _a;
+        return (_a = this.data.get(0x011a)) === null || _a === void 0 ? void 0 : _a.toRational();
+    }
+    set resolutionX(v) {
+        if (!this.setRational(0x011a, v)) {
+            this.data.delete(0x011a);
+        }
+    }
+    get hasResolutionY() {
+        return this.data.has(0x011b);
+    }
+    get resolutionY() {
+        var _a;
+        return (_a = this.data.get(0x011b)) === null || _a === void 0 ? void 0 : _a.toRational();
+    }
+    set resolutionY(v) {
+        if (!this.setRational(0x011b, v)) {
+            this.data.delete(0x011b);
+        }
+    }
+    get hasResolutionUnit() {
+        return this.data.has(0x0128);
+    }
+    get resolutionUnit() {
+        var _a;
+        return (_a = this.data.get(0x0128)) === null || _a === void 0 ? void 0 : _a.toInt();
+    }
+    set resolutionUnit(v) {
+        if (v === undefined) {
+            this.data.delete(0x0128);
+        }
+        else {
+            this.data.set(0x0128, new ExifShortValue(Math.trunc(v)));
+        }
+    }
+    get hasImageWidth() {
+        return this.data.has(0x0100);
+    }
+    get imageWidth() {
+        var _a;
+        return (_a = this.data.get(0x0100)) === null || _a === void 0 ? void 0 : _a.toInt();
+    }
+    set imageWidth(v) {
+        if (v === undefined) {
+            this.data.delete(0x0100);
+        }
+        else {
+            this.data.set(0x0100, new ExifShortValue(Math.trunc(v)));
+        }
+    }
+    get hasImageHeight() {
+        return this.data.has(0x0101);
+    }
+    get imageHeight() {
+        var _a;
+        return (_a = this.data.get(0x0101)) === null || _a === void 0 ? void 0 : _a.toInt();
+    }
+    set imageHeight(v) {
+        if (v === undefined) {
+            this.data.delete(0x0101);
+        }
+        else {
+            this.data.set(0x0101, new ExifShortValue(Math.trunc(v)));
+        }
+    }
+    get hasSoftware() {
+        return this.data.has(0x0131);
+    }
+    get software() {
+        var _a;
+        return (_a = this.data.get(0x0131)) === null || _a === void 0 ? void 0 : _a.toString();
+    }
+    set software(v) {
+        if (v === undefined) {
+            this.data.delete(0x0131);
+        }
+        else {
+            this.data.set(0x0131, new ExifAsciiValue(v));
+        }
+    }
+    get hasCopyright() {
+        return this.data.has(0x8298);
+    }
+    get copyright() {
+        var _a;
+        return (_a = this.data.get(0x8298)) === null || _a === void 0 ? void 0 : _a.toString();
+    }
+    set copyright(v) {
+        if (v === undefined) {
+            this.data.delete(0x8298);
+        }
+        else {
+            this.data.set(0x8298, new ExifAsciiValue(v));
+        }
+    }
+    setRational(tag, value) {
+        if (value instanceof Rational) {
+            this.data.set(tag, ExifRationalValue.from(value));
+            return true;
+        }
+        else if (Array.isArray(value) &&
+            value.every((v) => typeof v === 'number')) {
+            if (value.length === 2) {
+                const r = new Rational(value[0], value[1]);
+                this.data.set(tag, ExifRationalValue.from(r));
+                return true;
+            }
+        }
+        return false;
+    }
+    static isArrayOfRationalNumbers(value) {
+        return (Array.isArray(value) &&
+            value.every((v) => Array.isArray(v) &&
+                v.length >= 2 &&
+                v.every((sv) => typeof sv === 'number')));
+    }
+    has(tag) {
+        return this.data.has(tag);
+    }
+    getValue(tag) {
+        let _tag = tag;
+        if (typeof _tag === 'string') {
+            _tag = ExifTagNameToID.get(_tag);
+        }
+        if (typeof _tag === 'number') {
+            return this.data.get(_tag);
+        }
+        return undefined;
+    }
+    setValue(tag, value) {
+        let _tag = tag;
+        if (typeof _tag === 'string') {
+            _tag = ExifTagNameToID.get(_tag);
+        }
+        if (typeof _tag !== 'number') {
+            return;
+        }
+        if (value === undefined) {
+            this.data.delete(_tag);
+        }
+        else {
+            if (value instanceof ExifValue) {
+                this.data.set(_tag, value);
+            }
+            else {
+                const tagInfo = ExifImageTags.get(_tag);
+                if (tagInfo !== undefined) {
+                    const tagType = tagInfo.type;
+                    const tagCount = tagInfo.count;
+                    switch (tagType) {
+                        case ExifValueType.byte:
+                            if (Array.isArray(value) &&
+                                value.length === tagCount &&
+                                value.every((v) => typeof v === 'number')) {
+                                this.data.set(_tag, new ExifByteValue(new Uint8Array(value)));
+                            }
+                            else if (typeof value === 'number' && tagCount === 1) {
+                                this.data.set(_tag, new ExifByteValue(value));
+                            }
+                            break;
+                        case ExifValueType.ascii:
+                            if (typeof value === 'string') {
+                                this.data.set(_tag, new ExifAsciiValue(value));
+                            }
+                            break;
+                        case ExifValueType.short:
+                            if (Array.isArray(value) &&
+                                value.length === tagCount &&
+                                value.every((v) => typeof v === 'number')) {
+                                this.data.set(_tag, new ExifShortValue(new Uint16Array(value)));
+                            }
+                            else if (typeof value === 'number' && tagCount === 1) {
+                                this.data.set(_tag, new ExifShortValue(value));
+                            }
+                            break;
+                        case ExifValueType.long:
+                            if (Array.isArray(value) &&
+                                value.length === tagCount &&
+                                value.every((v) => typeof v === 'number')) {
+                                this.data.set(_tag, new ExifLongValue(new Uint32Array(value)));
+                            }
+                            else if (typeof value === 'number' && tagCount === 1) {
+                                this.data.set(_tag, new ExifLongValue(value));
+                            }
+                            break;
+                        case ExifValueType.rational:
+                            if (Array.isArray(value) &&
+                                value.length === tagCount &&
+                                value.every((v) => v instanceof Rational)) {
+                                this.data.set(_tag, new ExifRationalValue(value));
+                            }
+                            else if (tagCount === 1 &&
+                                Array.isArray(value) &&
+                                value.length === 2 &&
+                                value.every((v) => typeof v === 'number')) {
+                                const r = new Rational(value[0], value[1]);
+                                this.data.set(_tag, new ExifRationalValue(r));
+                            }
+                            else if (tagCount === 1 && value instanceof Rational) {
+                                this.data.set(_tag, new ExifRationalValue(value));
+                            }
+                            else if (Array.isArray(value) &&
+                                value.length === tagCount &&
+                                value.every((v) => Array.isArray(v) &&
+                                    v.length >= 2 &&
+                                    v.every((sv) => typeof sv === 'number'))) {
+                                const array = new Array();
+                                for (let i = 0; i < value.length; i++) {
+                                    const subarray = value[i];
+                                    if (Array.isArray(subarray) &&
+                                        subarray.length >= 2 &&
+                                        subarray.every((el) => typeof el === 'number')) {
+                                        array.push(new Rational(subarray[0], subarray[1]));
+                                    }
+                                }
+                                this.data.set(_tag, new ExifRationalValue(array));
+                            }
+                            break;
+                        case ExifValueType.sbyte:
+                            if (Array.isArray(value) &&
+                                value.length === tagCount &&
+                                value.every((v) => typeof v === 'number')) {
+                                this.data.set(_tag, new ExifSByteValue(new Int8Array(value)));
+                            }
+                            else if (typeof value === 'number' && tagCount === 1) {
+                                this.data.set(_tag, new ExifSByteValue(value));
+                            }
+                            break;
+                        case ExifValueType.undefined:
+                            if (Array.isArray(value) &&
+                                value.every((v) => typeof v === 'number')) {
+                                this.data.set(_tag, new ExifUndefinedValue(new Uint8Array(value)));
+                            }
+                            break;
+                        case ExifValueType.sshort:
+                            if (Array.isArray(value) &&
+                                value.length === tagCount &&
+                                value.every((v) => typeof v === 'number')) {
+                                this.data.set(_tag, new ExifSShortValue(new Int16Array(value)));
+                            }
+                            else if (typeof value === 'number' && tagCount === 1) {
+                                this.data.set(_tag, new ExifSShortValue(value));
+                            }
+                            break;
+                        case ExifValueType.slong:
+                            if (Array.isArray(value) &&
+                                value.length === tagCount &&
+                                value.every((v) => typeof v === 'number')) {
+                                this.data.set(_tag, new ExifSLongValue(new Int32Array(value)));
+                            }
+                            else if (typeof value === 'number' && tagCount === 1) {
+                                this.data.set(_tag, new ExifSLongValue(value));
+                            }
+                            break;
+                        case ExifValueType.srational:
+                            if (Array.isArray(value) &&
+                                value.length === tagCount &&
+                                value.every((v) => v instanceof Rational)) {
+                                this.data.set(_tag, new ExifSRationalValue(value));
+                            }
+                            else if (tagCount === 1 &&
+                                Array.isArray(value) &&
+                                value.length === 2 &&
+                                value.every((v) => typeof v === 'number')) {
+                                const r = new Rational(value[0], value[1]);
+                                this.data.set(_tag, new ExifSRationalValue(r));
+                            }
+                            else if (tagCount === 1 && value instanceof Rational) {
+                                this.data.set(_tag, new ExifSRationalValue(value));
+                            }
+                            else if (Array.isArray(value) &&
+                                value.length === tagCount &&
+                                value.every((v) => Array.isArray(v) &&
+                                    v.length >= 2 &&
+                                    v.every((sv) => typeof sv === 'number'))) {
+                                const array = new Array();
+                                for (let i = 0; i < value.length; i++) {
+                                    const subarray = value[i];
+                                    if (Array.isArray(subarray) &&
+                                        subarray.length >= 2 &&
+                                        subarray.every((el) => typeof el === 'number')) {
+                                        array.push(new Rational(subarray[0], subarray[1]));
+                                    }
+                                }
+                                this.data.set(_tag, new ExifSRationalValue(array));
+                            }
+                            break;
+                        case ExifValueType.single:
+                            if (Array.isArray(value) &&
+                                value.length === tagCount &&
+                                value.every((v) => typeof v === 'number')) {
+                                this.data.set(_tag, new ExifSingleValue(new Float32Array(value)));
+                            }
+                            else if (typeof value === 'number' && tagCount === 1) {
+                                this.data.set(_tag, new ExifSingleValue(value));
+                            }
+                            break;
+                        case ExifValueType.double:
+                            if (Array.isArray(value) &&
+                                value.length === tagCount &&
+                                value.every((v) => typeof v === 'number')) {
+                                this.data.set(_tag, new ExifDoubleValue(new Float64Array(value)));
+                            }
+                            else if (typeof value === 'number' && tagCount === 1) {
+                                this.data.set(_tag, new ExifDoubleValue(value));
+                            }
+                            break;
+                        case ExifValueType.none:
+                            break;
+                    }
+                }
+            }
+        }
+    }
+}
+//# sourceMappingURL=exif-ifd.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/exif/exif-data.js
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+class ExifData extends ExifIFDContainer {
+    get imageIfd() {
+        return this.get('ifd0');
+    }
+    get thumbnailIfd() {
+        return this.get('ifd1');
+    }
+    get exifIfd() {
+        return this.get('ifd0').sub.get('exif');
+    }
+    get gpsIfd() {
+        return this.get('ifd0').sub.get('gps');
+    }
+    get interopIfd() {
+        return this.get('ifd0').sub.get('interop');
+    }
+    writeDirectory(out, ifd, dataOffset) {
+        let offset = dataOffset;
+        out.writeUint16(ifd.size);
+        for (const tag of ifd.keys) {
+            const value = ifd.getValue(tag);
+            out.writeUint16(tag);
+            out.writeUint16(value.type);
+            out.writeUint32(value.length);
+            let size = value.dataSize;
+            if (size <= 4) {
+                value.write(out);
+                while (size < 4) {
+                    out.writeByte(0);
+                    size++;
+                }
+            }
+            else {
+                out.writeUint32(offset);
+                offset += size;
+            }
+        }
+        return offset;
+    }
+    writeDirectoryLargeValues(out, ifd) {
+        for (const value of ifd.values) {
+            const size = value.dataSize;
+            if (size > 4) {
+                value.write(out);
+            }
+        }
+    }
+    readEntry(block, blockOffset) {
+        const tag = block.readUint16();
+        const format = block.readUint16();
+        const count = block.readUint32();
+        const entry = new ExifEntry(tag, undefined);
+        if (format > Object.keys(ExifValueType).length)
+            return entry;
+        const f = format;
+        const fsize = ExifValueTypeSize[format];
+        const size = count * fsize;
+        const endOffset = block.offset + 4;
+        if (size > 4) {
+            const fieldOffset = block.readUint32();
+            block.offset = fieldOffset + blockOffset;
+        }
+        if (block.offset + size > block.end) {
+            return entry;
+        }
+        const data = block.readBytes(size);
+        switch (f) {
+            case ExifValueType.none:
+                break;
+            case ExifValueType.sbyte:
+                entry.value = ExifSByteValue.fromData(data, count);
+                break;
+            case ExifValueType.byte:
+                entry.value = ExifByteValue.fromData(data, count);
+                break;
+            case ExifValueType.undefined:
+                entry.value = ExifUndefinedValue.fromData(data, count);
+                break;
+            case ExifValueType.ascii:
+                entry.value = ExifAsciiValue.fromData(data, count);
+                break;
+            case ExifValueType.short:
+                entry.value = ExifShortValue.fromData(data, count);
+                break;
+            case ExifValueType.long:
+                entry.value = ExifLongValue.fromData(data, count);
+                break;
+            case ExifValueType.rational:
+                entry.value = ExifRationalValue.fromData(data, count);
+                break;
+            case ExifValueType.srational:
+                entry.value = ExifSRationalValue.fromData(data, count);
+                break;
+            case ExifValueType.sshort:
+                entry.value = ExifSShortValue.fromData(data, count);
+                break;
+            case ExifValueType.slong:
+                entry.value = ExifSLongValue.fromData(data, count);
+                break;
+            case ExifValueType.single:
+                entry.value = ExifSingleValue.fromData(data, count);
+                break;
+            case ExifValueType.double:
+                entry.value = ExifDoubleValue.fromData(data, count);
+                break;
+        }
+        block.offset = endOffset;
+        return entry;
+    }
+    static from(other) {
+        return new ExifData(other.directories);
+    }
+    static fromInputBuffer(input) {
+        const data = new ExifData();
+        data.read(input);
+        return data;
+    }
+    hasTag(tag) {
+        for (const directory of this.directories.values()) {
+            if (directory.has(tag)) {
+                return true;
+            }
+        }
+        return false;
+    }
+    getTag(tag) {
+        for (const directory of this.directories.values()) {
+            if (directory.has(tag)) {
+                return directory.getValue(tag);
+            }
+        }
+        return undefined;
+    }
+    getTagName(tag) {
+        var _a, _b;
+        return (_b = (_a = ExifImageTags.get(tag)) === null || _a === void 0 ? void 0 : _a.name) !== null && _b !== void 0 ? _b : '<unknown>';
+    }
+    write(out) {
+        const saveEndian = out.bigEndian;
+        out.bigEndian = true;
+        out.writeUint16(0x4d4d);
+        out.writeUint16(0x002a);
+        out.writeUint32(8);
+        if (this.directories.get('ifd0') === undefined)
+            this.directories.set('ifd0', new ExifIFD());
+        let dataOffset = 8;
+        const offsets = new Map();
+        for (const [name, ifd] of this.directories) {
+            offsets.set(name, dataOffset);
+            if (ifd.sub.has('exif')) {
+                ifd.setValue(0x8769, new ExifLongValue(0));
+            }
+            else {
+                ifd.setValue(0x8769, undefined);
+            }
+            if (ifd.sub.has('interop')) {
+                ifd.setValue(0xa005, new ExifLongValue(0));
+            }
+            else {
+                ifd.setValue(0xa005, undefined);
+            }
+            if (ifd.sub.has('gps')) {
+                ifd.setValue(0x8825, new ExifLongValue(0));
+            }
+            else {
+                ifd.setValue(0x8825, undefined);
+            }
+            dataOffset += 2 + 12 * ifd.size + 4;
+            for (const value of ifd.values) {
+                const dataSize = value.dataSize;
+                if (dataSize > 4) {
+                    dataOffset += dataSize;
+                }
+            }
+            for (const subName of ifd.sub.keys) {
+                const subIfd = ifd.sub.get(subName);
+                offsets.set(subName, dataOffset);
+                let subSize = 2 + 12 * subIfd.size;
+                for (const value of subIfd.values) {
+                    const dataSize = value.dataSize;
+                    if (dataSize > 4) {
+                        subSize += dataSize;
+                    }
+                }
+                dataOffset += subSize;
+            }
+        }
+        const dirArray = Array.from(this.directories);
+        for (let i = 0; i < dirArray.length; i++) {
+            const [name, ifd] = dirArray[i];
+            if (ifd.sub.has('exif')) {
+                ifd.getValue(0x8769).setInt(offsets.get('exif'));
+            }
+            if (ifd.sub.has('interop')) {
+                ifd.getValue(0xa005).setInt(offsets.get('interop'));
+            }
+            if (ifd.sub.has('gps')) {
+                ifd.getValue(0x8825).setInt(offsets.get('gps'));
+            }
+            const ifdOffset = offsets.get(name);
+            const dataOffset = ifdOffset + 2 + 12 * ifd.size + 4;
+            this.writeDirectory(out, ifd, dataOffset);
+            if (i === dirArray.length - 1) {
+                out.writeUint32(0);
+            }
+            else {
+                const nextName = dirArray[i + 1][0];
+                out.writeUint32(offsets.get(nextName));
+            }
+            this.writeDirectoryLargeValues(out, ifd);
+            for (const subName of ifd.sub.keys) {
+                const subIfd = ifd.sub.get(subName);
+                const subOffset = offsets.get(subName);
+                const dataOffset = subOffset + 2 + 12 * subIfd.size;
+                this.writeDirectory(out, subIfd, dataOffset);
+                this.writeDirectoryLargeValues(out, subIfd);
+            }
+        }
+        out.bigEndian = saveEndian;
+    }
+    read(block) {
+        const saveEndian = block.bigEndian;
+        block.bigEndian = true;
+        const blockOffset = block.offset;
+        const endian = block.readUint16();
+        if (endian === 0x4949) {
+            block.bigEndian = false;
+            if (block.readUint16() !== 0x2a00) {
+                block.bigEndian = saveEndian;
+                return false;
+            }
+        }
+        else if (endian === 0x4d4d) {
+            block.bigEndian = true;
+            if (block.readUint16() !== 0x002a) {
+                block.bigEndian = saveEndian;
+                return false;
+            }
+        }
+        else {
+            return false;
+        }
+        let ifdOffset = block.readUint32();
+        let index = 0;
+        while (ifdOffset > 0) {
+            block.offset = blockOffset + ifdOffset;
+            const directory = new ExifIFD();
+            const numEntries = block.readUint16();
+            const dir = new Array();
+            for (let i = 0; i < numEntries; i++) {
+                const entry = this.readEntry(block, blockOffset);
+                dir.push(entry);
+            }
+            for (const entry of dir) {
+                if (entry.value !== undefined) {
+                    directory.setValue(entry.tag, entry.value);
+                }
+            }
+            this.directories.set(`ifd${index}`, directory);
+            index++;
+            ifdOffset = block.readUint32();
+        }
+        const subTags = new Map([
+            [0x8769, 'exif'],
+            [0xa005, 'interop'],
+            [0x8825, 'gps'],
+        ]);
+        for (const d of this.directories.values()) {
+            for (const dt of subTags.keys()) {
+                if (d.has(dt)) {
+                    const ifdOffset = d.getValue(dt).toInt();
+                    block.offset = blockOffset + ifdOffset;
+                    const directory = new ExifIFD();
+                    const numEntries = block.readUint16();
+                    const dir = new Array();
+                    for (let i = 0; i < numEntries; i++) {
+                        const entry = this.readEntry(block, blockOffset);
+                        dir.push(entry);
+                    }
+                    for (const entry of dir) {
+                        if (entry.value !== undefined) {
+                            directory.setValue(entry.tag, entry.value);
+                        }
+                    }
+                    d.sub.set(subTags.get(dt), directory);
+                }
+            }
+        }
+        block.bigEndian = saveEndian;
+        return false;
+    }
+    toString() {
+        let s = '';
+        for (const [name, directory] of this.directories) {
+            s += `${name}\n`;
+            for (const tag of directory.keys) {
+                const value = directory.getValue(tag);
+                if (value === undefined) {
+                    s += `\t${this.getTagName(tag)}\n`;
+                }
+                else {
+                    s += `\t${this.getTagName(tag)}: ${value.toString()}\n`;
+                }
+            }
+            for (const subName of directory.sub.keys) {
+                s += `${subName}\n`;
+                const subDirectory = directory.sub.get(subName);
+                for (const tag of subDirectory.keys) {
+                    const value = subDirectory.getValue(tag);
+                    if (value === undefined) {
+                        s += `\t${this.getTagName(tag)}\n`;
+                    }
+                    else {
+                        s += `\t${this.getTagName(tag)}: ${value}\n`;
+                    }
+                }
+            }
+        }
+        return s.toString();
+    }
+}
+//# sourceMappingURL=exif-data.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/common/memory-image.js
+
+
+
+
+
+
+
+
+
+class MemoryImage {
+    constructor(options) {
+        var _a, _b;
+        this._xOffset = 0;
+        this._yOffset = 0;
+        this._duration = 0;
+        this._disposeMethod = DisposeMode.clear;
+        this._blendMethod = BlendMode.over;
+        this._width = options.width;
+        this._height = options.height;
+        this._rgbChannelSet = (_a = options.rgbChannelSet) !== null && _a !== void 0 ? _a : RgbChannelSet.rgba;
+        this._exifData =
+            options.exifData !== undefined
+                ? ExifData.from(options.exifData)
+                : new ExifData();
+        this._iccProfile = options.iccProfile;
+        this._textData = options.textData;
+        this._data =
+            (_b = options.data) !== null && _b !== void 0 ? _b : new Uint32Array(options.width * options.height);
+    }
+    get data() {
+        return this._data;
+    }
+    get xOffset() {
+        return this._xOffset;
+    }
+    get yOffset() {
+        return this._yOffset;
+    }
+    set duration(v) {
+        this._duration = v;
+    }
+    get duration() {
+        return this._duration;
+    }
+    get disposeMethod() {
+        return this._disposeMethod;
+    }
+    get blendMethod() {
+        return this._blendMethod;
+    }
+    get rgbChannelSet() {
+        return this._rgbChannelSet;
+    }
+    get exifData() {
+        return this._exifData;
+    }
+    set exifData(v) {
+        this._exifData = v;
+    }
+    set iccProfile(v) {
+        this._iccProfile = v;
+    }
+    get iccProfile() {
+        return this._iccProfile;
+    }
+    get textData() {
+        return this._textData;
+    }
+    get width() {
+        return this._width;
+    }
+    get height() {
+        return this._height;
+    }
+    get numberOfChannels() {
+        return this.rgbChannelSet === RgbChannelSet.rgba ? 4 : 3;
+    }
+    get length() {
+        return this.data.length;
+    }
+    static convertData(width, height, bytes, colorModel) {
+        if (colorModel === ColorModel.rgba) {
+            return bytes instanceof Uint32Array
+                ? ArrayUtils.copyUint32(bytes)
+                : ArrayUtils.copyUint32(new Uint32Array(bytes.buffer));
+        }
+        const input = bytes instanceof Uint32Array ? new Uint8Array(bytes.buffer) : bytes;
+        const data = new Uint32Array(width * height);
+        const rgba = new Uint8Array(data.buffer);
+        switch (colorModel) {
+            case ColorModel.bgra:
+                for (let i = 0, len = input.length; i < len; i += 4) {
+                    rgba[i + 0] = input[i + 2];
+                    rgba[i + 1] = input[i + 1];
+                    rgba[i + 2] = input[i + 0];
+                    rgba[i + 3] = input[i + 3];
+                }
+                break;
+            case ColorModel.abgr:
+                for (let i = 0, len = input.length; i < len; i += 4) {
+                    rgba[i + 0] = input[i + 3];
+                    rgba[i + 1] = input[i + 2];
+                    rgba[i + 2] = input[i + 1];
+                    rgba[i + 3] = input[i + 0];
+                }
+                break;
+            case ColorModel.argb:
+                for (let i = 0, len = input.length; i < len; i += 4) {
+                    rgba[i + 0] = input[i + 1];
+                    rgba[i + 1] = input[i + 2];
+                    rgba[i + 2] = input[i + 3];
+                    rgba[i + 3] = input[i + 0];
+                }
+                break;
+            case ColorModel.bgr:
+                for (let i = 0, j = 0, len = input.length; j < len; i += 4, j += 3) {
+                    rgba[i + 0] = input[j + 2];
+                    rgba[i + 1] = input[j + 1];
+                    rgba[i + 2] = input[j + 0];
+                    rgba[i + 3] = 255;
+                }
+                break;
+            case ColorModel.rgb:
+                for (let i = 0, j = 0, len = input.length; j < len; i += 4, j += 3) {
+                    rgba[i + 0] = input[j + 0];
+                    rgba[i + 1] = input[j + 1];
+                    rgba[i + 2] = input[j + 2];
+                    rgba[i + 3] = 255;
+                }
+                break;
+            case ColorModel.luminance:
+                for (let i = 0, j = 0, len = input.length; j < len; i += 4, ++j) {
+                    rgba[i + 0] = input[j];
+                    rgba[i + 1] = input[j];
+                    rgba[i + 2] = input[j];
+                    rgba[i + 3] = 255;
+                }
+                break;
+        }
+        return data;
+    }
+    static rgb(options) {
+        const opt = Object.assign(Object.assign({}, options), { rgbChannelSet: RgbChannelSet.rgb });
+        return new MemoryImage(opt);
+    }
+    static from(other) {
+        const result = new MemoryImage({
+            width: other._width,
+            height: other._height,
+            rgbChannelSet: other._rgbChannelSet,
+            exifData: ExifData.from(other._exifData),
+            iccProfile: other._iccProfile,
+            textData: other._textData !== undefined ? new Map(other._textData) : undefined,
+            data: ArrayUtils.copyUint32(other._data),
+        });
+        result._xOffset = other._xOffset;
+        result._yOffset = other._yOffset;
+        result._duration = other._duration;
+        result._disposeMethod = other._disposeMethod;
+        result._blendMethod = other._blendMethod;
+        return result;
+    }
+    static fromBytes(options) {
+        var _a, _b;
+        (_a = options.rgbChannelSet) !== null && _a !== void 0 ? _a : (options.rgbChannelSet = RgbChannelSet.rgba);
+        (_b = options.colorModel) !== null && _b !== void 0 ? _b : (options.colorModel = ColorModel.rgba);
+        const data = this.convertData(options.width, options.height, options.data, options.colorModel);
+        const result = new MemoryImage({
+            width: options.width,
+            height: options.height,
+            rgbChannelSet: options.rgbChannelSet,
+            exifData: options.exifData,
+            iccProfile: options.iccProfile,
+            textData: options.textData,
+            data: data,
+        });
+        return result;
+    }
+    clone() {
+        return MemoryImage.from(this);
+    }
+    getBytes(colorModel = ColorModel.rgba) {
+        const rgba = new Uint8Array(this._data.buffer);
+        switch (colorModel) {
+            case ColorModel.rgba:
+                return rgba;
+            case ColorModel.bgra: {
+                const bytes = new Uint8Array(this._width * this._height * 4);
+                for (let i = 0, len = bytes.length; i < len; i += 4) {
+                    bytes[i + 0] = rgba[i + 2];
+                    bytes[i + 1] = rgba[i + 1];
+                    bytes[i + 2] = rgba[i + 0];
+                    bytes[i + 3] = rgba[i + 3];
+                }
+                return bytes;
+            }
+            case ColorModel.abgr: {
+                const bytes = new Uint8Array(this._width * this._height * 4);
+                for (let i = 0, len = bytes.length; i < len; i += 4) {
+                    bytes[i + 0] = rgba[i + 3];
+                    bytes[i + 1] = rgba[i + 2];
+                    bytes[i + 2] = rgba[i + 1];
+                    bytes[i + 3] = rgba[i + 0];
+                }
+                return bytes;
+            }
+            case ColorModel.argb: {
+                const bytes = new Uint8Array(this._width * this._height * 4);
+                for (let i = 0, len = bytes.length; i < len; i += 4) {
+                    bytes[i + 0] = rgba[i + 3];
+                    bytes[i + 1] = rgba[i + 0];
+                    bytes[i + 2] = rgba[i + 1];
+                    bytes[i + 3] = rgba[i + 2];
+                }
+                return bytes;
+            }
+            case ColorModel.rgb: {
+                const bytes = new Uint8Array(this._width * this._height * 3);
+                for (let i = 0, j = 0, len = bytes.length; j < len; i += 4, j += 3) {
+                    bytes[j + 0] = rgba[i + 0];
+                    bytes[j + 1] = rgba[i + 1];
+                    bytes[j + 2] = rgba[i + 2];
+                }
+                return bytes;
+            }
+            case ColorModel.bgr: {
+                const bytes = new Uint8Array(this._width * this._height * 3);
+                for (let i = 0, j = 0, len = bytes.length; j < len; i += 4, j += 3) {
+                    bytes[j + 0] = rgba[i + 2];
+                    bytes[j + 1] = rgba[i + 1];
+                    bytes[j + 2] = rgba[i + 0];
+                }
+                return bytes;
+            }
+            case ColorModel.luminance: {
+                const bytes = new Uint8Array(this._width * this._height);
+                for (let i = 0, len = this.length; i < len; ++i) {
+                    bytes[i] = color_Color.getLuminance(this._data[i]);
+                }
+                return bytes;
+            }
+        }
+        throw new ImageError('Unknown color model');
+    }
+    fill(color) {
+        this._data.fill(color);
+        return this;
+    }
+    fillBackground(color) {
+        for (let i = 0; i < this.length; i++) {
+            if (this._data[i] === 0) {
+                this._data[i] = color;
+            }
+        }
+    }
+    addImage(other) {
+        const h = Math.min(this._height, other._height);
+        const w = Math.min(this._width, other._width);
+        for (let y = 0; y < h; ++y) {
+            for (let x = 0; x < w; ++x) {
+                const c1 = this.getPixel(x, y);
+                const r1 = color_Color.getRed(c1);
+                const g1 = color_Color.getGreen(c1);
+                const b1 = color_Color.getBlue(c1);
+                const a1 = color_Color.getAlpha(c1);
+                const c2 = other.getPixel(x, y);
+                const r2 = color_Color.getRed(c2);
+                const g2 = color_Color.getGreen(c2);
+                const b2 = color_Color.getBlue(c2);
+                const a2 = color_Color.getAlpha(c2);
+                this.setPixel(x, y, color_Color.getColor(r1 + r2, g1 + g2, b1 + b2, a1 + a2));
+            }
+        }
+        return this;
+    }
+    subtractImage(other) {
+        const h = Math.min(this._height, other._height);
+        const w = Math.min(this._width, other._width);
+        for (let y = 0; y < h; ++y) {
+            for (let x = 0; x < w; ++x) {
+                const c1 = this.getPixel(x, y);
+                const r1 = color_Color.getRed(c1);
+                const g1 = color_Color.getGreen(c1);
+                const b1 = color_Color.getBlue(c1);
+                const a1 = color_Color.getAlpha(c1);
+                const c2 = other.getPixel(x, y);
+                const r2 = color_Color.getRed(c2);
+                const g2 = color_Color.getGreen(c2);
+                const b2 = color_Color.getBlue(c2);
+                const a2 = color_Color.getAlpha(c2);
+                this.setPixel(x, y, color_Color.getColor(r1 - r2, g1 - g2, b1 - b2, a1 - a2));
+            }
+        }
+        return this;
+    }
+    multiplyImage(other) {
+        const h = Math.min(this._height, other._height);
+        const w = Math.min(this._width, other._width);
+        for (let y = 0; y < h; ++y) {
+            for (let x = 0; x < w; ++x) {
+                const c1 = this.getPixel(x, y);
+                const r1 = color_Color.getRed(c1);
+                const g1 = color_Color.getGreen(c1);
+                const b1 = color_Color.getBlue(c1);
+                const a1 = color_Color.getAlpha(c1);
+                const c2 = other.getPixel(x, y);
+                const r2 = color_Color.getRed(c2);
+                const g2 = color_Color.getGreen(c2);
+                const b2 = color_Color.getBlue(c2);
+                const a2 = color_Color.getAlpha(c2);
+                this.setPixel(x, y, color_Color.getColor(r1 * r2, g1 * g2, b1 * b2, a1 * a2));
+            }
+        }
+        return this;
+    }
+    orImage(other) {
+        const h = Math.min(this._height, other._height);
+        const w = Math.min(this._width, other._width);
+        for (let y = 0; y < h; ++y) {
+            for (let x = 0; x < w; ++x) {
+                const c1 = this.getPixel(x, y);
+                const r1 = color_Color.getRed(c1);
+                const g1 = color_Color.getGreen(c1);
+                const b1 = color_Color.getBlue(c1);
+                const a1 = color_Color.getAlpha(c1);
+                const c2 = other.getPixel(x, y);
+                const r2 = color_Color.getRed(c2);
+                const g2 = color_Color.getGreen(c2);
+                const b2 = color_Color.getBlue(c2);
+                const a2 = color_Color.getAlpha(c2);
+                this.setPixel(x, y, color_Color.getColor(r1 | r2, g1 | g2, b1 | b2, a1 | a2));
+            }
+        }
+        return this;
+    }
+    andImage(other) {
+        const h = Math.min(this._height, other._height);
+        const w = Math.min(this._width, other._width);
+        for (let y = 0; y < h; ++y) {
+            for (let x = 0; x < w; ++x) {
+                const c1 = this.getPixel(x, y);
+                const r1 = color_Color.getRed(c1);
+                const g1 = color_Color.getGreen(c1);
+                const b1 = color_Color.getBlue(c1);
+                const a1 = color_Color.getAlpha(c1);
+                const c2 = other.getPixel(x, y);
+                const r2 = color_Color.getRed(c2);
+                const g2 = color_Color.getGreen(c2);
+                const b2 = color_Color.getBlue(c2);
+                const a2 = color_Color.getAlpha(c2);
+                this.setPixel(x, y, color_Color.getColor(r1 & r2, g1 & g2, b1 & b2, a1 & a2));
+            }
+        }
+        return this;
+    }
+    modImage(other) {
+        const h = Math.min(this._height, other._height);
+        const w = Math.min(this._width, other._width);
+        for (let y = 0; y < h; ++y) {
+            for (let x = 0; x < w; ++x) {
+                const c1 = this.getPixel(x, y);
+                const r1 = color_Color.getRed(c1);
+                const g1 = color_Color.getGreen(c1);
+                const b1 = color_Color.getBlue(c1);
+                const a1 = color_Color.getAlpha(c1);
+                const c2 = other.getPixel(x, y);
+                const r2 = color_Color.getRed(c2);
+                const g2 = color_Color.getGreen(c2);
+                const b2 = color_Color.getBlue(c2);
+                const a2 = color_Color.getAlpha(c2);
+                this.setPixel(x, y, color_Color.getColor(r1 % r2, g1 % g2, b1 % b2, a1 % a2));
+            }
+        }
+        return this;
+    }
+    getPixelByIndex(index) {
+        return this._data[index];
+    }
+    setPixelByIndex(index, color) {
+        this._data[index] = color;
+    }
+    getBufferIndex(x, y) {
+        return y * this._width + x;
+    }
+    boundsSafe(x, y) {
+        return x >= 0 && x < this._width && y >= 0 && y < this._height;
+    }
+    getPixel(x, y) {
+        const index = this.getBufferIndex(x, y);
+        return this._data[index];
+    }
+    getPixelSafe(x, y) {
+        const index = this.getBufferIndex(x, y);
+        return this.boundsSafe(x, y) ? this._data[index] : 0;
+    }
+    getPixelInterpolate(fx, fy, interpolation = Interpolation.linear) {
+        if (interpolation === Interpolation.cubic) {
+            return this.getPixelCubic(fx, fy);
+        }
+        else if (interpolation === Interpolation.linear) {
+            return this.getPixelLinear(fx, fy);
+        }
+        return this.getPixelSafe(Math.trunc(fx), Math.trunc(fy));
+    }
+    getPixelLinear(fx, fy) {
+        const x = Math.trunc(fx) - (fx >= 0 ? 0 : 1);
+        const nx = x + 1;
+        const y = Math.trunc(fy) - (fy >= 0 ? 0 : 1);
+        const ny = y + 1;
+        const dx = fx - x;
+        const dy = fy - y;
+        const linear = (icc, inc, icn, inn) => {
+            return Math.trunc(icc + dx * (inc - icc + dy * (icc + inn - icn - inc)) + dy * (icn - icc));
+        };
+        const icc = this.getPixelSafe(x, y);
+        const icn = ny >= this._height ? icc : this.getPixelSafe(x, ny);
+        const inc = nx >= this._width ? icc : this.getPixelSafe(nx, y);
+        const inn = nx >= this._width || ny >= this._height ? icc : this.getPixelSafe(nx, ny);
+        return color_Color.getColor(linear(color_Color.getRed(icc), color_Color.getRed(inc), color_Color.getRed(icn), color_Color.getRed(inn)), linear(color_Color.getGreen(icc), color_Color.getGreen(inc), color_Color.getGreen(icn), color_Color.getGreen(inn)), linear(color_Color.getBlue(icc), color_Color.getBlue(inc), color_Color.getBlue(icn), color_Color.getBlue(inn)), linear(color_Color.getAlpha(icc), color_Color.getAlpha(inc), color_Color.getAlpha(icn), color_Color.getAlpha(inn)));
+    }
+    getPixelCubic(fx, fy) {
+        const x = Math.trunc(fx) - (fx >= 0.0 ? 0 : 1);
+        const px = x - 1;
+        const nx = x + 1;
+        const ax = x + 2;
+        const y = Math.trunc(fy) - (fy >= 0.0 ? 0 : 1);
+        const py = y - 1;
+        const ny = y + 1;
+        const ay = y + 2;
+        const dx = fx - x;
+        const dy = fy - y;
+        const cubic = (dx, ipp, icp, inp, iap) => {
+            return (icp +
+                0.5 *
+                    (dx * (-ipp + inp) +
+                        (dx * (dx * (2 * ipp)) - 5 * icp + 4 * inp - iap) +
+                        dx * (dx * (dx * (-ipp + 3 * icp - 3 * inp + iap)))));
+        };
+        const icc = this.getPixelSafe(x, y);
+        const ipp = px < 0 || py < 0 ? icc : this.getPixelSafe(px, py);
+        const icp = px < 0 ? icc : this.getPixelSafe(x, py);
+        const inp = py < 0 || nx >= this._width ? icc : this.getPixelSafe(nx, py);
+        const iap = ax >= this._width || py < 0 ? icc : this.getPixelSafe(ax, py);
+        const ip0 = cubic(dx, color_Color.getRed(ipp), color_Color.getRed(icp), color_Color.getRed(inp), color_Color.getRed(iap));
+        const ip1 = cubic(dx, color_Color.getGreen(ipp), color_Color.getGreen(icp), color_Color.getGreen(inp), color_Color.getGreen(iap));
+        const ip2 = cubic(dx, color_Color.getBlue(ipp), color_Color.getBlue(icp), color_Color.getBlue(inp), color_Color.getBlue(iap));
+        const ip3 = cubic(dx, color_Color.getAlpha(ipp), color_Color.getAlpha(icp), color_Color.getAlpha(inp), color_Color.getAlpha(iap));
+        const ipc = px < 0 ? icc : this.getPixelSafe(px, y);
+        const inc = nx >= this._width ? icc : this.getPixelSafe(nx, y);
+        const iac = ax >= this._width ? icc : this.getPixelSafe(ax, y);
+        const Ic0 = cubic(dx, color_Color.getRed(ipc), color_Color.getRed(icc), color_Color.getRed(inc), color_Color.getRed(iac));
+        const Ic1 = cubic(dx, color_Color.getGreen(ipc), color_Color.getGreen(icc), color_Color.getGreen(inc), color_Color.getGreen(iac));
+        const Ic2 = cubic(dx, color_Color.getBlue(ipc), color_Color.getBlue(icc), color_Color.getBlue(inc), color_Color.getBlue(iac));
+        const Ic3 = cubic(dx, color_Color.getAlpha(ipc), color_Color.getAlpha(icc), color_Color.getAlpha(inc), color_Color.getAlpha(iac));
+        const ipn = px < 0 || ny >= this._height ? icc : this.getPixelSafe(px, ny);
+        const icn = ny >= this._height ? icc : this.getPixelSafe(x, ny);
+        const inn = nx >= this._width || ny >= this._height ? icc : this.getPixelSafe(nx, ny);
+        const ian = ax >= this._width || ny >= this._height ? icc : this.getPixelSafe(ax, ny);
+        const in0 = cubic(dx, color_Color.getRed(ipn), color_Color.getRed(icn), color_Color.getRed(inn), color_Color.getRed(ian));
+        const in1 = cubic(dx, color_Color.getGreen(ipn), color_Color.getGreen(icn), color_Color.getGreen(inn), color_Color.getGreen(ian));
+        const in2 = cubic(dx, color_Color.getBlue(ipn), color_Color.getBlue(icn), color_Color.getBlue(inn), color_Color.getBlue(ian));
+        const in3 = cubic(dx, color_Color.getAlpha(ipn), color_Color.getAlpha(icn), color_Color.getAlpha(inn), color_Color.getAlpha(ian));
+        const ipa = px < 0 || ay >= this._height ? icc : this.getPixelSafe(px, ay);
+        const ica = ay >= this._height ? icc : this.getPixelSafe(x, ay);
+        const ina = nx >= this._width || ay >= this._height ? icc : this.getPixelSafe(nx, ay);
+        const iaa = ax >= this._width || ay >= this._height ? icc : this.getPixelSafe(ax, ay);
+        const ia0 = cubic(dx, color_Color.getRed(ipa), color_Color.getRed(ica), color_Color.getRed(ina), color_Color.getRed(iaa));
+        const ia1 = cubic(dx, color_Color.getGreen(ipa), color_Color.getGreen(ica), color_Color.getGreen(ina), color_Color.getGreen(iaa));
+        const ia2 = cubic(dx, color_Color.getBlue(ipa), color_Color.getBlue(ica), color_Color.getBlue(ina), color_Color.getBlue(iaa));
+        const ia3 = cubic(dx, color_Color.getAlpha(ipa), color_Color.getAlpha(ica), color_Color.getAlpha(ina), color_Color.getAlpha(iaa));
+        const c0 = cubic(dy, ip0, Ic0, in0, ia0);
+        const c1 = cubic(dy, ip1, Ic1, in1, ia1);
+        const c2 = cubic(dy, ip2, Ic2, in2, ia2);
+        const c3 = cubic(dy, ip3, Ic3, in3, ia3);
+        return color_Color.getColor(Math.trunc(c0), Math.trunc(c1), Math.trunc(c2), Math.trunc(c3));
+    }
+    setPixel(x, y, color) {
+        const index = this.getBufferIndex(x, y);
+        this._data[index] = color;
+    }
+    setPixelSafe(x, y, color) {
+        if (this.boundsSafe(x, y)) {
+            const index = this.getBufferIndex(x, y);
+            this._data[index] = color;
+        }
+    }
+    setPixelRgba(x, y, r, g, b, a = 0xff) {
+        const index = this.getBufferIndex(x, y);
+        this._data[index] = color_Color.getColor(r, g, b, a);
+    }
+    getWhiteBalance(asDouble = false) {
+        const len = this._data.length;
+        let r = 0.0;
+        let g = 0.0;
+        let b = 0.0;
+        let t = 1;
+        for (let i = 0; i < len; ++i) {
+            r += (color_Color.getRed(this._data[i]) - r) / t;
+            g += (color_Color.getGreen(this._data[i]) - g) / t;
+            b += (color_Color.getBlue(this._data[i]) - b) / t;
+            ++t;
+        }
+        const averageGray = (r + g + b) / 3.0;
+        return asDouble ? averageGray : Math.trunc(averageGray);
+    }
+    getColorExtremes() {
+        let min = 255;
+        let max = 0;
+        for (let i = 0; i < this.length; ++i) {
+            const c = this.getPixelByIndex(i);
+            const r = color_Color.getRed(c);
+            const g = color_Color.getGreen(c);
+            const b = color_Color.getBlue(c);
+            if (r < min) {
+                min = r;
+            }
+            if (r > max) {
+                max = r;
+            }
+            if (g < min) {
+                min = g;
+            }
+            if (g > max) {
+                max = g;
+            }
+            if (b < min) {
+                min = b;
+            }
+            if (b > max) {
+                max = b;
+            }
+            if (this.rgbChannelSet === RgbChannelSet.rgba) {
+                const a = color_Color.getAlpha(c);
+                if (a < min) {
+                    min = a;
+                }
+                if (a > max) {
+                    max = a;
+                }
+            }
+        }
+        return {
+            min: min,
+            max: max,
+        };
+    }
+    addTextData(data) {
+        if (this._textData === undefined) {
+            this._textData = new Map();
+        }
+        for (const [key, value] of data) {
+            this._textData.set(key, value);
+        }
+    }
+}
+//# sourceMappingURL=memory-image.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/error/not-implemented-error.js
+class NotImplementedError extends Error {
+    toString() {
+        return this.message.length > 0
+            ? `NotImplementedError: ${this.message}`
+            : 'NotImplementedError';
+    }
+}
+//# sourceMappingURL=not-implemented-error.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/hdr/half.js
+
+class Half {
+    constructor(bits) {
+        this.bits = bits;
+    }
+    static convert(i) {
+        const s = (i >> 16) & 0x00008000;
+        let e = ((i >> 23) & 0x000000ff) - (127 - 15);
+        let m = i & 0x007fffff;
+        if (e <= 0) {
+            if (e < -10) {
+                return s;
+            }
+            m |= 0x00800000;
+            const t = 14 - e;
+            const a = (1 << (t - 1)) - 1;
+            const b = (m >> t) & 1;
+            m = (m + a + b) >> t;
+            return s | m;
+        }
+        else if (e === 0xff - (127 - 15)) {
+            if (m === 0) {
+                return s | 0x7c00;
+            }
+            else {
+                m >>= 13;
+                return s | 0x7c00 | m | (m === 0 ? 1 : 0);
+            }
+        }
+        else {
+            m = m + 0x00000fff + ((m >> 13) & 1);
+            if ((m & 0x00800000) !== 0) {
+                m = 0;
+                e += 1;
+            }
+            if (e > 30) {
+                return s | 0x7c00;
+            }
+            return s | (e << 10) | (m >> 13);
+        }
+    }
+    static halfToFloat(y) {
+        const s = (y >> 15) & 0x00000001;
+        let e = (y >> 10) & 0x0000001f;
+        let m = y & 0x000003ff;
+        if (e === 0) {
+            if (m === 0) {
+                return s << 31;
+            }
+            else {
+                while ((m & 0x00000400) === 0) {
+                    m <<= 1;
+                    e -= 1;
+                }
+                e += 1;
+                m &= ~0x00000400;
+            }
+        }
+        else if (e === 31) {
+            if (m === 0) {
+                return (s << 31) | 0x7f800000;
+            }
+            else {
+                return (s << 31) | 0x7f800000 | (m << 13);
+            }
+        }
+        e += 127 - 15;
+        m <<= 13;
+        return (s << 31) | (e << 23) | m;
+    }
+    static fromBits(bits) {
+        return new Half(bits);
+    }
+    static halfToDouble(bits) {
+        return this.toFloatFloat32[bits];
+    }
+    static doubleToHalf(n) {
+        const f = n;
+        const xi = BitOperators.toUint32(f);
+        if (f === 0.0) {
+            return xi >> 16;
+        }
+        let e = (xi >> 23) & 0x000001ff;
+        e = this.eLut[e];
+        if (e !== 0) {
+            const m = xi & 0x007fffff;
+            return e + ((m + 0x00000fff + ((m >> 13) & 1)) >> 13);
+        }
+        return this.convert(xi);
+    }
+    static positiveInfinity() {
+        return Half.fromBits(0x7c00);
+    }
+    static negativeInfinity() {
+        return Half.fromBits(0xfc00);
+    }
+    static qNan() {
+        return Half.fromBits(0x7fff);
+    }
+    static sNan() {
+        return Half.fromBits(0x7dff);
+    }
+    toDouble() {
+        return Half.toFloatFloat32[this.bits];
+    }
+    unaryMinus() {
+        return Half.fromBits(this.bits ^ 0x8000);
+    }
+    add(other) {
+        let d = 0;
+        if (other instanceof Half) {
+            d = other.toDouble();
+        }
+        else if (typeof other === 'number') {
+            d = other;
+        }
+        const bits = Half.doubleToHalf(this.toDouble() + d);
+        return new Half(bits);
+    }
+    subtract(other) {
+        let d = 0;
+        if (other instanceof Half) {
+            d = other.toDouble();
+        }
+        else if (typeof other === 'number') {
+            d = other;
+        }
+        const bits = Half.doubleToHalf(this.toDouble() - d);
+        return new Half(bits);
+    }
+    multiply(other) {
+        let d = 0;
+        if (other instanceof Half) {
+            d = other.toDouble();
+        }
+        else if (typeof other === 'number') {
+            d = other;
+        }
+        const bits = Half.doubleToHalf(this.toDouble() * d);
+        return new Half(bits);
+    }
+    divide(other) {
+        let d = 0;
+        if (other instanceof Half) {
+            d = other.toDouble();
+        }
+        else if (typeof other === 'number') {
+            d = other;
+        }
+        const bits = Half.doubleToHalf(this.toDouble() / d);
+        return new Half(bits);
+    }
+    round(n) {
+        if (n >= 10) {
+            return this;
+        }
+        const s = this.bits & 0x8000;
+        let e = this.bits & 0x7fff;
+        e >>= 9 - n;
+        e += e & 1;
+        e <<= 9 - n;
+        if (e >= 0x7c00) {
+            e = this.bits;
+            e >>= 10 - n;
+            e <<= 10 - n;
+        }
+        return Half.fromBits(s | e);
+    }
+    isFinite() {
+        const e = (this.bits >> 10) & 0x001f;
+        return e < 31;
+    }
+    isNormalized() {
+        const e = (this.bits >> 10) & 0x001f;
+        return e > 0 && e < 31;
+    }
+    isDenormalized() {
+        const e = (this.bits >> 10) & 0x001f;
+        const m = this.bits & 0x3ff;
+        return e === 0 && m !== 0;
+    }
+    isZero() {
+        return (this.bits & 0x7fff) === 0;
+    }
+    isNan() {
+        const e = (this.bits >> 10) & 0x001f;
+        const m = this.bits & 0x3ff;
+        return e === 31 && m !== 0;
+    }
+    isInfinity() {
+        const e = (this.bits >> 10) & 0x001f;
+        const m = this.bits & 0x3ff;
+        return e === 31 && m === 0;
+    }
+    isNegative() {
+        return (this.bits & 0x8000) !== 0;
+    }
+    getBits() {
+        return this.bits;
+    }
+    setBits(bits) {
+        this.bits = bits;
+    }
+}
+(() => {
+    Half.toFloatUint32 = new Uint32Array(1 << 16);
+    Half.toFloatFloat32 = new Float32Array(Half.toFloatUint32.buffer);
+    Half.eLut = new Uint16Array(1 << 9);
+    for (let i = 0; i < 0x100; i++) {
+        const e = (i & 0x0ff) - (127 - 15);
+        if (e <= 0 || e >= 30) {
+            Half.eLut[i] = 0;
+            Half.eLut[i | 0x100] = 0;
+        }
+        else {
+            Half.eLut[i] = e << 10;
+            Half.eLut[i | 0x100] = (e << 10) | 0x8000;
+        }
+    }
+    const iMax = 1 << 16;
+    for (let i = 0; i < iMax; i++) {
+        Half.toFloatUint32[i] = Half.halfToFloat(i);
+    }
+})();
+//# sourceMappingURL=half.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/hdr/hdr-slice.js
+
+
+
+class HdrSlice {
+    constructor(options) {
+        var _a;
+        this._name = options.name;
+        this._width = options.width;
+        this._height = options.height;
+        this._format = options.format;
+        this._bitsPerSample = options.bitsPerSample;
+        this._data =
+            (_a = options.data) !== null && _a !== void 0 ? _a : HdrSlice.allocateDataForType(options.width * options.height, options.format, options.bitsPerSample);
+    }
+    get data() {
+        return this._data;
+    }
+    get name() {
+        return this._name;
+    }
+    get width() {
+        return this._width;
+    }
+    get height() {
+        return this._height;
+    }
+    get format() {
+        return this._format;
+    }
+    get bitsPerSample() {
+        return this._bitsPerSample;
+    }
+    get maxIntSize() {
+        let v = 0xffffffff;
+        if (this._bitsPerSample === 8) {
+            v = 0xff;
+        }
+        else if (this._bitsPerSample === 16) {
+            v = 0xffff;
+        }
+        if (this._format === HdrSlice.INT) {
+            v -= 1;
+        }
+        return v;
+    }
+    get isFloat() {
+        return this._format === HdrSlice.FLOAT;
+    }
+    static allocateDataForType(size, type, bitsPerSample) {
+        switch (type) {
+            case HdrSlice.INT:
+                if (bitsPerSample === 8) {
+                    return new Int8Array(size);
+                }
+                else if (bitsPerSample === 16) {
+                    return new Int16Array(size);
+                }
+                else if (bitsPerSample === 32) {
+                    return new Int32Array(size);
+                }
+                break;
+            case HdrSlice.UINT:
+                if (bitsPerSample === 8) {
+                    return new Uint8Array(size);
+                }
+                else if (bitsPerSample === 16) {
+                    return new Uint16Array(size);
+                }
+                else if (bitsPerSample === 32) {
+                    return new Uint32Array(size);
+                }
+                break;
+            case HdrSlice.FLOAT:
+                if (bitsPerSample === 16) {
+                    return new Uint16Array(size);
+                }
+                else if (bitsPerSample === 32) {
+                    return new Float32Array(size);
+                }
+                else if (bitsPerSample === 64) {
+                    return new Float64Array(size);
+                }
+                break;
+        }
+        throw new NotImplementedError();
+    }
+    static from(other) {
+        return new HdrSlice({
+            name: other._name,
+            width: other._width,
+            height: other._height,
+            format: other._format,
+            bitsPerSample: other._bitsPerSample,
+            data: ArrayUtils.copy(other.data),
+        });
+    }
+    getBytes() {
+        return new Uint8Array(this._data.buffer);
+    }
+    getFloat(x, y) {
+        const pi = y * this._width + x;
+        if (this._format === HdrSlice.INT || this._format === HdrSlice.UINT) {
+            return Math.trunc(this._data[pi]) / this.maxIntSize;
+        }
+        const s = this._format === HdrSlice.FLOAT && this._bitsPerSample === 16
+            ? Half.halfToDouble(this._data[pi])
+            : this._data[pi];
+        return s;
+    }
+    setFloat(x, y, v) {
+        if (this._format !== HdrSlice.FLOAT) {
+            return;
+        }
+        const pi = y * this._width + x;
+        if (this._bitsPerSample === 16) {
+            this._data[pi] = Half.doubleToHalf(v);
+        }
+        else {
+            this._data[pi] = v;
+        }
+    }
+    getInt(x, y) {
+        const pi = y * this._width + x;
+        return Math.trunc(this._data[pi]);
+    }
+    setInt(x, y, v) {
+        const pi = y * this._width + x;
+        this._data[pi] = Math.trunc(v);
+    }
+}
+HdrSlice.UINT = 0;
+HdrSlice.INT = 1;
+HdrSlice.FLOAT = 3;
+//# sourceMappingURL=hdr-slice.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/hdr/hdr-image.js
+
+
+class HdrImage {
+    constructor() {
+        this._slices = new Map();
+        this._red = undefined;
+        this._green = undefined;
+        this._blue = undefined;
+        this._alpha = undefined;
+        this._depth = undefined;
+        this._exifData = undefined;
+    }
+    get slices() {
+        return this._slices;
+    }
+    get red() {
+        return this._red;
+    }
+    get green() {
+        return this._green;
+    }
+    get blue() {
+        return this._blue;
+    }
+    get alpha() {
+        return this._alpha;
+    }
+    get depth() {
+        return this._depth;
+    }
+    get exifData() {
+        return this._exifData;
+    }
+    set exifData(v) {
+        this._exifData = v;
+    }
+    get hasColor() {
+        return (this.red !== undefined ||
+            this.green !== undefined ||
+            this.blue !== undefined);
+    }
+    get hasAlpha() {
+        return this.alpha !== undefined;
+    }
+    get hasDepth() {
+        return this.depth !== undefined;
+    }
+    get width() {
+        if (this.slices.size > 0) {
+            const firstSlice = this.slices.values().next().value;
+            return firstSlice.width;
+        }
+        else {
+            return 0;
+        }
+    }
+    get height() {
+        if (this.slices.size > 0) {
+            const firstSlice = this.slices.values().next().value;
+            return firstSlice.height;
+        }
+        else {
+            return 0;
+        }
+    }
+    get bitsPerSample() {
+        if (this.red !== undefined) {
+            return this.red.bitsPerSample;
+        }
+        else {
+            if (this.slices.size > 0) {
+                const firstSlice = this.slices.values().next().value;
+                return firstSlice.bitsPerSample;
+            }
+            else {
+                return 0;
+            }
+        }
+    }
+    get sampleFormat() {
+        if (this.red !== undefined) {
+            return this.red.format;
+        }
+        else {
+            if (this.slices.size > 0) {
+                const firstSlice = this.slices.values().next().value;
+                return firstSlice.format;
+            }
+            else {
+                return 0;
+            }
+        }
+    }
+    get numberOfChannels() {
+        return this.slices.size;
+    }
+    static create(width, height, channels, type, bitsPerSample) {
+        const image = new HdrImage();
+        if (0 <= channels && channels <= 4) {
+            const channelList = [HdrImage.R, HdrImage.G, HdrImage.B, HdrImage.A];
+            for (let i = 0; i < channels; ++i) {
+                image.addChannel(new HdrSlice({
+                    name: channelList[i],
+                    width: width,
+                    height: height,
+                    format: type,
+                    bitsPerSample: bitsPerSample,
+                }));
+            }
+            return image;
+        }
+        else {
+            return image;
+        }
+    }
+    static from(other) {
+        const image = new HdrImage();
+        for (const [, value] of other.slices) {
+            image.addChannel(HdrSlice.from(value));
+        }
+        return image;
+    }
+    static fromImage(other, type = HdrSlice.FLOAT, bitsPerSample = 16) {
+        const image = new HdrImage();
+        image.addChannel(new HdrSlice({
+            name: HdrImage.R,
+            width: other.width,
+            height: other.height,
+            format: type,
+            bitsPerSample: bitsPerSample,
+        }));
+        image.addChannel(new HdrSlice({
+            name: HdrImage.G,
+            width: other.width,
+            height: other.height,
+            format: type,
+            bitsPerSample: bitsPerSample,
+        }));
+        image.addChannel(new HdrSlice({
+            name: HdrImage.B,
+            width: other.width,
+            height: other.height,
+            format: type,
+            bitsPerSample: bitsPerSample,
+        }));
+        if (other.rgbChannelSet === RgbChannelSet.rgba) {
+            image.addChannel(new HdrSlice({
+                name: HdrImage.A,
+                width: other.width,
+                height: other.height,
+                format: type,
+                bitsPerSample: bitsPerSample,
+            }));
+        }
+        const rgb = other.getBytes();
+        for (let y = 0, si = 0; y < other.height; ++y) {
+            for (let x = 0; x < other.width; ++x) {
+                image.setRed(x, y, rgb[si++] / 255);
+                image.setGreen(x, y, rgb[si++] / 255);
+                image.setBlue(x, y, rgb[si++] / 255);
+                if (image.alpha !== undefined) {
+                    image.setAlpha(x, y, rgb[si++] / 255);
+                }
+            }
+        }
+        return image;
+    }
+    getRed(x, y) {
+        if (this.red !== undefined) {
+            return this.red.isFloat ? this.red.getFloat(x, y) : this.red.getInt(x, y);
+        }
+        else {
+            return 0;
+        }
+    }
+    setRed(x, y, c) {
+        if (this.red !== undefined) {
+            if (this.red.isFloat) {
+                this.red.setFloat(x, y, c);
+            }
+            else {
+                this.red.setInt(x, y, c);
+            }
+        }
+    }
+    setRedInt(x, y, c) {
+        if (this.red !== undefined) {
+            this.red.setInt(x, y, c);
+        }
+    }
+    getGreen(x, y) {
+        if (this.green !== undefined) {
+            return this.green.isFloat
+                ? this.green.getFloat(x, y)
+                : this.green.getInt(x, y);
+        }
+        else {
+            return 0;
+        }
+    }
+    setGreen(x, y, c) {
+        if (this.green !== undefined) {
+            if (this.green.isFloat) {
+                this.green.setFloat(x, y, c);
+            }
+            else {
+                this.green.setInt(x, y, c);
+            }
+        }
+    }
+    setGreenInt(x, y, c) {
+        if (this.green !== undefined) {
+            this.green.setInt(x, y, c);
+        }
+    }
+    getBlue(x, y) {
+        if (this.blue !== undefined) {
+            return this.blue.isFloat
+                ? this.blue.getFloat(x, y)
+                : this.blue.getInt(x, y);
+        }
+        else {
+            return 0;
+        }
+    }
+    setBlue(x, y, c) {
+        if (this.blue !== undefined) {
+            if (this.blue.isFloat) {
+                this.blue.setFloat(x, y, c);
+            }
+            else {
+                this.blue.setInt(x, y, c);
+            }
+        }
+    }
+    setBlueInt(x, y, c) {
+        if (this.blue !== undefined) {
+            this.blue.setInt(x, y, c);
+        }
+    }
+    getAlpha(x, y) {
+        if (this.alpha !== undefined) {
+            return this.alpha.isFloat
+                ? this.alpha.getFloat(x, y)
+                : this.alpha.getInt(x, y);
+        }
+        else {
+            return 0;
+        }
+    }
+    setAlpha(x, y, c) {
+        if (this.alpha !== undefined) {
+            if (this.alpha.isFloat) {
+                this.alpha.setFloat(x, y, c);
+            }
+            else {
+                this.alpha.setInt(x, y, c);
+            }
+        }
+    }
+    setAlphaInt(x, y, c) {
+        if (this.alpha !== undefined) {
+            this.alpha.setInt(x, y, c);
+        }
+    }
+    getDepth(x, y) {
+        if (this.depth !== undefined) {
+            return this.depth.isFloat
+                ? this.depth.getFloat(x, y)
+                : this.depth.getInt(x, y);
+        }
+        else {
+            return 0;
+        }
+    }
+    setDepth(x, y, c) {
+        if (this.depth !== undefined) {
+            if (this.depth.isFloat) {
+                this.depth.setFloat(x, y, c);
+            }
+            else {
+                this.depth.setInt(x, y, c);
+            }
+        }
+    }
+    setDepthInt(x, y, c) {
+        if (this.depth !== undefined) {
+            this.depth.setInt(x, y, c);
+        }
+    }
+    hasChannel(ch) {
+        return this.slices.has(ch);
+    }
+    getChannel(ch) {
+        return this.slices.get(ch);
+    }
+    addChannel(slice) {
+        const ch = slice.name;
+        this.slices.set(ch, slice);
+        switch (ch) {
+            case HdrImage.R:
+                this._red = slice;
+                break;
+            case HdrImage.G:
+                this._green = slice;
+                break;
+            case HdrImage.B:
+                this._blue = slice;
+                break;
+            case HdrImage.A:
+                this._alpha = slice;
+                break;
+            case HdrImage.Z:
+                this._depth = slice;
+                break;
+        }
+    }
+    toFloatRgba() {
+        const rgba = new Float32Array(this.width * this.height * 4);
+        const w = this.width;
+        const h = this.height;
+        for (let y = 0, di = 0; y < h; ++y) {
+            for (let x = 0; x < w; ++x) {
+                rgba[di++] = this.red === undefined ? 0.0 : this.red.getFloat(x, y);
+                rgba[di++] = this.green === undefined ? 0.0 : this.green.getFloat(x, y);
+                rgba[di++] = this.blue === undefined ? 0.0 : this.blue.getFloat(x, y);
+                rgba[di++] = this.alpha === undefined ? 1.0 : this.alpha.getFloat(x, y);
+            }
+        }
+        return rgba;
+    }
+}
+HdrImage.R = 'R';
+HdrImage.G = 'G';
+HdrImage.B = 'B';
+HdrImage.A = 'A';
+HdrImage.Z = 'Z';
+//# sourceMappingURL=hdr-image.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/formats/bmp/bitmap-file-header.js
+
+
+class BitmapFileHeader {
+    constructor(b) {
+        if (!BitmapFileHeader.isValidFile(b)) {
+            throw new ImageError('Not a bitmap file.');
+        }
+        b.skip(2);
+        this._fileLength = b.readInt32();
+        b.skip(4);
+        this._offset = b.readInt32();
+    }
+    get fileLength() {
+        return this._fileLength;
+    }
+    set offset(v) {
+        this._offset = v;
+    }
+    get offset() {
+        return this._offset;
+    }
+    static isValidFile(b) {
+        if (b.length < 2) {
+            return false;
+        }
+        const type = InputBuffer.from(b).readUint16();
+        return type === BitmapFileHeader.BMP_HEADER_FILETYPE;
+    }
+    toJson() {
+        return new Map([
+            ['offset', this._offset],
+            ['fileLength', this.fileLength],
+            ['fileType', BitmapFileHeader.BMP_HEADER_FILETYPE],
+        ]);
+    }
+}
+BitmapFileHeader.BMP_HEADER_FILETYPE = 0x42 + (0x4d << 8);
+//# sourceMappingURL=bitmap-file-header.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/formats/bmp/bitmap-compression-mode.js
+var BitmapCompressionMode;
+(function (BitmapCompressionMode) {
+    BitmapCompressionMode[BitmapCompressionMode["BI_BITFIELDS"] = 0] = "BI_BITFIELDS";
+    BitmapCompressionMode[BitmapCompressionMode["NONE"] = 1] = "NONE";
+})(BitmapCompressionMode || (BitmapCompressionMode = {}));
+//# sourceMappingURL=bitmap-compression-mode.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/formats/bmp/bmp-info.js
+
+
+
+
+
+
+class BmpInfo {
+    constructor(p, fileHeader) {
+        this._width = 0;
+        this._height = 0;
+        this._backgroundColor = 0xffffffff;
+        this._numFrames = 1;
+        this._fileHeader = fileHeader !== null && fileHeader !== void 0 ? fileHeader : new BitmapFileHeader(p);
+        this._headerSize = p.readUint32();
+        this._width = p.readInt32();
+        const height = p.readInt32();
+        this._readBottomUp = height > 0;
+        this._height = Math.abs(height);
+        this._planes = p.readUint16();
+        this._bpp = p.readUint16();
+        this._compression = BmpInfo.intToCompressionMode(p.readUint32());
+        this._imageSize = p.readUint32();
+        this._xppm = p.readInt32();
+        this._yppm = p.readInt32();
+        this._totalColors = p.readUint32();
+        this._importantColors = p.readUint32();
+        if ([1, 4, 8].includes(this._bpp)) {
+            this.readPalette(p);
+        }
+        if (this._headerSize === 124) {
+            this._v5redMask = p.readUint32();
+            this._v5greenMask = p.readUint32();
+            this._v5blueMask = p.readUint32();
+            this._v5alphaMask = p.readUint32();
+        }
+    }
+    get width() {
+        return this._width;
+    }
+    get height() {
+        return this._height;
+    }
+    get backgroundColor() {
+        return this._backgroundColor;
+    }
+    get numFrames() {
+        return this._numFrames;
+    }
+    get fileHeader() {
+        return this._fileHeader;
+    }
+    get headerSize() {
+        return this._headerSize;
+    }
+    get planes() {
+        return this._planes;
+    }
+    get bpp() {
+        return this._bpp;
+    }
+    get compression() {
+        return this._compression;
+    }
+    get imageSize() {
+        return this._imageSize;
+    }
+    get xppm() {
+        return this._xppm;
+    }
+    get yppm() {
+        return this._yppm;
+    }
+    get totalColors() {
+        return this._totalColors;
+    }
+    get importantColors() {
+        return this._importantColors;
+    }
+    get readBottomUp() {
+        return this._readBottomUp;
+    }
+    get v5redMask() {
+        return this._v5redMask;
+    }
+    get v5greenMask() {
+        return this._v5greenMask;
+    }
+    get v5blueMask() {
+        return this._v5blueMask;
+    }
+    get v5alphaMask() {
+        return this._v5alphaMask;
+    }
+    get colorPalette() {
+        return this._colorPalette;
+    }
+    get ignoreAlphaChannel() {
+        return (this._headerSize === 40 ||
+            (this._headerSize === 124 && this._v5alphaMask === 0));
+    }
+    static intToCompressionMode(compIndex) {
+        const map = new Map([
+            [0, BitmapCompressionMode.NONE],
+            [3, BitmapCompressionMode.BI_BITFIELDS],
+        ]);
+        const compression = map.get(compIndex);
+        if (compression === undefined) {
+            throw new ImageError(`Bitmap compression ${compIndex} is not supported yet.`);
+        }
+        return compression;
+    }
+    compressionModeToString() {
+        switch (this._compression) {
+            case BitmapCompressionMode.BI_BITFIELDS:
+                return 'BI_BITFIELDS';
+            case BitmapCompressionMode.NONE:
+                return 'none';
+        }
+        throw new NotImplementedError();
+    }
+    readPalette(p) {
+        const colors = this._totalColors === 0 ? 1 << this._bpp : this._totalColors;
+        const colorBytes = this._headerSize === 12 ? 3 : 4;
+        const colorPalette = [];
+        for (let i = 0; i < colors; i++) {
+            const color = this.readRgba(p, colorBytes === 3 ? 100 : undefined);
+            colorPalette.push(color);
+        }
+        this._colorPalette = colorPalette;
+    }
+    readRgba(input, aDefault) {
+        if (this._readBottomUp) {
+            const b = input.readByte();
+            const g = input.readByte();
+            const r = input.readByte();
+            const a = aDefault !== null && aDefault !== void 0 ? aDefault : input.readByte();
+            return color_Color.getColor(r, g, b, this.ignoreAlphaChannel ? 255 : a);
+        }
+        else {
+            const r = input.readByte();
+            const b = input.readByte();
+            const g = input.readByte();
+            const a = aDefault !== null && aDefault !== void 0 ? aDefault : input.readByte();
+            return color_Color.getColor(r, b, g, this.ignoreAlphaChannel ? 255 : a);
+        }
+    }
+    decodeRgba(input, pixel) {
+        if (this._colorPalette !== undefined) {
+            if (this._bpp === 1) {
+                const b = input.readByte().toString(2).padStart(8, '0');
+                for (let i = 0; i < 8; i++) {
+                    pixel(this._colorPalette[parseInt(b[i])]);
+                }
+                return;
+            }
+            else if (this._bpp === 4) {
+                const b = input.readByte();
+                const left = b >> 4;
+                const right = b & 0x0f;
+                pixel(this._colorPalette[left]);
+                pixel(this._colorPalette[right]);
+                return;
+            }
+            else if (this._bpp === 8) {
+                const b = input.readByte();
+                pixel(this._colorPalette[b]);
+                return;
+            }
+        }
+        if (this._bpp === 32 &&
+            this._compression === BitmapCompressionMode.BI_BITFIELDS) {
+            pixel(this.readRgba(input));
+            return;
+        }
+        if (this._bpp === 32 && this._compression === BitmapCompressionMode.NONE) {
+            pixel(this.readRgba(input));
+            return;
+        }
+        if (this._bpp === 24) {
+            pixel(this.readRgba(input, 255));
+            return;
+        }
+        throw new ImageError(`Unsupported bpp (${this._bpp}) or compression (${this._compression}).`);
+    }
+    toString() {
+        return JSON.stringify({
+            headerSize: this._headerSize,
+            width: this._width,
+            height: this._height,
+            planes: this._planes,
+            bpp: this._bpp,
+            file: this._fileHeader.toJson(),
+            compression: this.compressionModeToString(),
+            imageSize: this._imageSize,
+            xppm: this._xppm,
+            yppm: this._yppm,
+            totalColors: this._totalColors,
+            importantColors: this._importantColors,
+            readBottomUp: this._readBottomUp,
+            v5redMask: BitOperators.debugBits32(this._v5redMask),
+            v5greenMask: BitOperators.debugBits32(this._v5greenMask),
+            v5blueMask: BitOperators.debugBits32(this._v5blueMask),
+            v5alphaMask: BitOperators.debugBits32(this._v5alphaMask),
+        }, undefined, 2);
+    }
+}
+//# sourceMappingURL=bmp-info.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/formats/bmp-decoder.js
+
+
+
+
+
+
+class BmpDecoder {
+    get numFrames() {
+        return this.info !== undefined ? this.info.numFrames : 0;
+    }
+    pixelDataOffset() {
+        return this.info !== undefined ? this.info.fileHeader.offset : undefined;
+    }
+    isValidFile(bytes) {
+        return BitmapFileHeader.isValidFile(new InputBuffer({
+            buffer: bytes,
+        }));
+    }
+    startDecode(bytes) {
+        if (!this.isValidFile(bytes)) {
+            return undefined;
+        }
+        this.input = new InputBuffer({
+            buffer: bytes,
+        });
+        this.info = new BmpInfo(this.input);
+        return this.info;
+    }
+    decodeFrame(_) {
+        if (this.input === undefined || this.info === undefined) {
+            return undefined;
+        }
+        const offset = this.pixelDataOffset();
+        if (offset === undefined) {
+            return undefined;
+        }
+        this.input.offset = offset;
+        let rowStride = (this.info.width * this.info.bpp) >> 3;
+        if (rowStride % 4 !== 0) {
+            rowStride += 4 - (rowStride % 4);
+        }
+        const image = new MemoryImage({
+            width: this.info.width,
+            height: this.info.height,
+        });
+        for (let y = image.height - 1; y >= 0; --y) {
+            const line = this.info.readBottomUp ? y : image.height - 1 - y;
+            const row = this.input.readBytes(rowStride);
+            for (let x = 0; x < image.width;) {
+                this.info.decodeRgba(row, (color) => {
+                    return image.setPixelSafe(x++, line, color);
+                });
+            }
+        }
+        return image;
+    }
+    decodeHdrFrame(frame) {
+        const img = this.decodeFrame(frame);
+        if (img === undefined) {
+            return undefined;
+        }
+        return HdrImage.fromImage(img);
+    }
+    decodeAnimation(bytes) {
+        if (!this.isValidFile(bytes)) {
+            return undefined;
+        }
+        const image = this.decodeImage(bytes);
+        if (image === undefined) {
+            return undefined;
+        }
+        const animation = new FrameAnimation();
+        animation.addFrame(image);
+        return animation;
+    }
+    decodeImage(bytes, frame = 0) {
+        if (!this.isValidFile(bytes)) {
+            return undefined;
+        }
+        this.startDecode(bytes);
+        return this.decodeFrame(frame);
+    }
+    decodeHdrImage(bytes, frame = 0) {
+        const img = this.decodeImage(bytes, frame);
+        if (img === undefined) {
+            return undefined;
+        }
+        return HdrImage.fromImage(img);
+    }
+}
+//# sourceMappingURL=bmp-decoder.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/common/output-buffer.js
+
+class OutputBuffer {
+    constructor(options) {
+        var _a, _b;
+        this._bigEndian = (_a = options === null || options === void 0 ? void 0 : options.bigEndian) !== null && _a !== void 0 ? _a : false;
+        this._buffer = new Uint8Array((_b = options === null || options === void 0 ? void 0 : options.size) !== null && _b !== void 0 ? _b : OutputBuffer.BLOCK_SIZE);
+        this._length = 0;
+    }
+    get buffer() {
+        return this._buffer;
+    }
+    get bigEndian() {
+        return this._bigEndian;
+    }
+    set bigEndian(v) {
+        this._bigEndian = v;
+    }
+    get length() {
+        return this._length;
+    }
+    set length(v) {
+        this._length = v;
+    }
+    expandBuffer(required) {
+        let blockSize = OutputBuffer.BLOCK_SIZE;
+        if (required !== undefined) {
+            blockSize = required;
+        }
+        else if (this._buffer.length > 0) {
+            blockSize = this._buffer.length * 2;
+        }
+        const newBuffer = new Uint8Array(this._buffer.length + blockSize);
+        ArrayUtils.setRange(newBuffer, 0, this._buffer.length, this._buffer);
+        this._buffer = newBuffer;
+    }
+    rewind() {
+        this._length = 0;
+    }
+    clear() {
+        this._buffer = new Uint8Array(OutputBuffer.BLOCK_SIZE);
+        this._length = 0;
+    }
+    getBytes() {
+        return new Uint8Array(this._buffer.buffer, 0, this._length);
+    }
+    writeByte(value) {
+        if (this._length === this._buffer.length) {
+            this.expandBuffer();
+        }
+        this._buffer[this._length++] = value & 0xff;
+    }
+    writeBytes(bytes, length) {
+        const correctedLength = length !== null && length !== void 0 ? length : bytes.length;
+        while (this._length + correctedLength > this._buffer.length) {
+            this.expandBuffer(this._length + correctedLength - this._buffer.length);
+        }
+        ArrayUtils.setRange(this._buffer, this._length, this._length + correctedLength, bytes);
+        this._length += correctedLength;
+    }
+    writeBuffer(bytes) {
+        while (length + bytes.length > this._buffer.length) {
+            this.expandBuffer(length + bytes.length - this._buffer.length);
+        }
+        ArrayUtils.setRange(this._buffer, length, length + bytes.length, bytes.buffer, bytes.offset);
+        this._length += bytes.length;
+    }
+    writeUint16(value) {
+        if (this._bigEndian) {
+            this.writeByte((value >> 8) & 0xff);
+            this.writeByte(value & 0xff);
+            return;
+        }
+        this.writeByte(value & 0xff);
+        this.writeByte((value >> 8) & 0xff);
+    }
+    writeUint32(value) {
+        if (this._bigEndian) {
+            this.writeByte((value >> 24) & 0xff);
+            this.writeByte((value >> 16) & 0xff);
+            this.writeByte((value >> 8) & 0xff);
+            this.writeByte(value & 0xff);
+            return;
+        }
+        this.writeByte(value & 0xff);
+        this.writeByte((value >> 8) & 0xff);
+        this.writeByte((value >> 16) & 0xff);
+        this.writeByte((value >> 24) & 0xff);
+    }
+    writeFloat32(value) {
+        const fb = new Float32Array(1);
+        fb[0] = value;
+        const b = new Uint8Array(fb.buffer);
+        if (this._bigEndian) {
+            this.writeByte(b[3]);
+            this.writeByte(b[2]);
+            this.writeByte(b[1]);
+            this.writeByte(b[0]);
+            return;
+        }
+        this.writeByte(b[0]);
+        this.writeByte(b[1]);
+        this.writeByte(b[2]);
+        this.writeByte(b[3]);
+    }
+    writeFloat64(value) {
+        const fb = new Float64Array(1);
+        fb[0] = value;
+        const b = new Uint8Array(fb.buffer);
+        if (this._bigEndian) {
+            this.writeByte(b[7]);
+            this.writeByte(b[6]);
+            this.writeByte(b[5]);
+            this.writeByte(b[4]);
+            this.writeByte(b[3]);
+            this.writeByte(b[2]);
+            this.writeByte(b[1]);
+            this.writeByte(b[0]);
+            return;
+        }
+        this.writeByte(b[0]);
+        this.writeByte(b[1]);
+        this.writeByte(b[2]);
+        this.writeByte(b[3]);
+        this.writeByte(b[4]);
+        this.writeByte(b[5]);
+        this.writeByte(b[6]);
+        this.writeByte(b[7]);
+    }
+    subarray(start, end) {
+        const correctedStart = start >= 0 ? start : this._length + start;
+        let correctedEnd = end !== null && end !== void 0 ? end : this._length;
+        if (correctedEnd < 0) {
+            correctedEnd = this._length + correctedEnd;
+        }
+        return new Uint8Array(this._buffer.buffer, correctedStart, correctedEnd - correctedStart);
+    }
+}
+OutputBuffer.BLOCK_SIZE = 0x2000;
+//# sourceMappingURL=output-buffer.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/formats/bmp-encoder.js
+
+
+
+
+class BmpEncoder {
+    constructor() {
+        this._supportsAnimation = false;
+    }
+    get supportsAnimation() {
+        return this._supportsAnimation;
+    }
+    encodeImage(image) {
+        const bytesPerPixel = image.rgbChannelSet === RgbChannelSet.rgb ? 3 : 4;
+        const bpp = bytesPerPixel * 8;
+        const rgbSize = image.width * image.height * bytesPerPixel;
+        const headerSize = 54;
+        const headerInfoSize = 40;
+        const fileSize = rgbSize + headerSize;
+        const out = new OutputBuffer();
+        out.writeUint16(BitmapFileHeader.BMP_HEADER_FILETYPE);
+        out.writeUint32(fileSize);
+        out.writeUint32(0);
+        out.writeUint32(headerSize);
+        out.writeUint32(headerInfoSize);
+        out.writeUint32(image.width);
+        out.writeUint32(-image.height);
+        out.writeUint16(1);
+        out.writeUint16(bpp);
+        out.writeUint32(0);
+        out.writeUint32(rgbSize);
+        out.writeUint32(0);
+        out.writeUint32(0);
+        out.writeUint32(0);
+        out.writeUint32(0);
+        for (let y = 0, pi = 0; y < image.height; ++y) {
+            for (let x = 0; x < image.width; ++x, ++pi) {
+                const rgba = image.getPixelByIndex(pi);
+                out.writeByte(color_Color.getBlue(rgba));
+                out.writeByte(color_Color.getGreen(rgba));
+                out.writeByte(color_Color.getRed(rgba));
+                if (bytesPerPixel === 4) {
+                    out.writeByte(color_Color.getAlpha(rgba));
+                }
+            }
+            if (bytesPerPixel !== 4) {
+                const padding = 4 - ((image.width * bytesPerPixel) % 4);
+                if (padding !== 4) {
+                    const bytes = new Uint8Array(padding - 1).fill(0x00);
+                    out.writeBytes(bytes);
+                    out.writeByte(0xff);
+                }
+            }
+        }
+        return out.getBytes();
+    }
+    encodeAnimation(_) {
+        return undefined;
+    }
+}
+//# sourceMappingURL=bmp-encoder.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/common/point.js
+class Point {
+    constructor(x, y) {
+        this._x = x;
+        this._y = y;
+    }
+    get x() {
+        return this._x;
+    }
+    get y() {
+        return this._y;
+    }
+    get xt() {
+        return Math.trunc(this.x);
+    }
+    get yt() {
+        return Math.trunc(this.y);
+    }
+    static from(other) {
+        return new Point(other._x, other._y);
+    }
+    move(x, y) {
+        this._x = x;
+        this._y = y;
+        return this;
+    }
+    offset(dx, dy) {
+        return this.move(this._x + dx, this._y + dy);
+    }
+    mul(n) {
+        return this.move(this._x * n, this._y * n);
+    }
+    add(p) {
+        return this.move(this._x + p.x, this._y + p.y);
+    }
+    equals(other) {
+        return (other instanceof Point && this._x === other._x && this._y === other._y);
+    }
+}
+//# sourceMappingURL=point.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/transform/flip-direction.js
+var FlipDirection;
+(function (FlipDirection) {
+    FlipDirection[FlipDirection["horizontal"] = 0] = "horizontal";
+    FlipDirection[FlipDirection["vertical"] = 1] = "vertical";
+    FlipDirection[FlipDirection["both"] = 2] = "both";
+})(FlipDirection || (FlipDirection = {}));
+//# sourceMappingURL=flip-direction.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/common/line.js
+class Line {
+    constructor(x1, y1, x2, y2) {
+        this._startX = 0;
+        this._startY = 0;
+        this._endX = 0;
+        this._endY = 0;
+        this._dx = 0;
+        this._dy = 0;
+        this.initialize(x1, y1, x2, y2);
+    }
+    get startX() {
+        return this._startX;
+    }
+    get startY() {
+        return this._startY;
+    }
+    get endX() {
+        return this._endX;
+    }
+    get endY() {
+        return this._endY;
+    }
+    get dx() {
+        return this._dx;
+    }
+    get dy() {
+        return this._dy;
+    }
+    static from(other) {
+        return new Line(other.startX, other.startY, other.endX, other.endY);
+    }
+    initialize(x1, y1, x2, y2) {
+        this._startX = Math.min(x1, x2);
+        this._startY = Math.min(y1, y2);
+        this._endX = Math.max(x1, x2);
+        this._endY = Math.max(y1, y2);
+        this._dx = this._endX - this._startX;
+        this._dy = this._endY - this._startY;
+    }
+    moveStart(x, y) {
+        this.initialize(x, y, this._endX, this._endY);
+    }
+    moveEnd(x, y) {
+        this.initialize(this._startX, this._startY, x, y);
+    }
+}
+//# sourceMappingURL=line.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/common/rectangle.js
+class Rectangle {
+    constructor(x1, y1, x2, y2) {
+        this._left = 0;
+        this._top = 0;
+        this._right = 0;
+        this._bottom = 0;
+        this._width = 0;
+        this._height = 0;
+        this.initialize(x1, y1, x2, y2);
+    }
+    get left() {
+        return this._left;
+    }
+    get top() {
+        return this._top;
+    }
+    get right() {
+        return this._right;
+    }
+    get bottom() {
+        return this._bottom;
+    }
+    get width() {
+        return this._width;
+    }
+    get height() {
+        return this._height;
+    }
+    static fromXYWH(x, y, width, height) {
+        return new Rectangle(x, y, x + width, y + height);
+    }
+    static from(other) {
+        return new Rectangle(other.left, other.top, other.right, other.bottom);
+    }
+    initialize(x1, y1, x2, y2) {
+        this._left = Math.min(x1, x2);
+        this._top = Math.min(y1, y2);
+        this._right = Math.max(x1, x2);
+        this._bottom = Math.max(y1, y2);
+        this._width = this._right - this._left;
+        this._height = this._bottom - this._top;
+    }
+}
+//# sourceMappingURL=rectangle.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/draw/draw.js
+
+
+
+
+
+class Draw {
+    static calculateCircumference(image, center, radius) {
+        if (radius < 0 ||
+            center.x + radius < 0 ||
+            center.x - radius >= image.width ||
+            center.y + radius < 0 ||
+            center.y - radius >= image.height) {
+            return [];
+        }
+        if (radius === 0) {
+            return [center];
+        }
+        const points = [
+            new Point(center.x - radius, center.y),
+            new Point(center.x + radius, center.y),
+            new Point(center.x, center.y - radius),
+            new Point(center.x, center.y + radius),
+        ];
+        if (radius === 1) {
+            return points;
+        }
+        for (let f = 1 - radius, ddFx = 0, ddFy = -(radius << 1), x = 0, y = radius; x < y;) {
+            if (f >= 0) {
+                ddFy += 2;
+                f += ddFy;
+                --y;
+            }
+            ++x;
+            ddFx += 2;
+            f += ddFx + 1;
+            if (x !== y + 1) {
+                const x1 = center.x - y;
+                const x2 = center.x + y;
+                const y1 = center.y - x;
+                const y2 = center.y + x;
+                const x3 = center.x - x;
+                const x4 = center.x + x;
+                const y3 = center.y - y;
+                const y4 = center.y + y;
+                points.push(new Point(x1, y1));
+                points.push(new Point(x1, y2));
+                points.push(new Point(x2, y1));
+                points.push(new Point(x2, y2));
+                if (x !== y) {
+                    points.push(new Point(x3, y3));
+                    points.push(new Point(x4, y4));
+                    points.push(new Point(x4, y3));
+                    points.push(new Point(x3, y4));
+                }
+            }
+        }
+        return points;
+    }
+    static computeOutCode(rect, p) {
+        let code = Draw.OUTCODE_INSIDE;
+        if (p.x < rect.left) {
+            code |= Draw.OUTCODE_LEFT;
+        }
+        else if (p.x > rect.right) {
+            code |= Draw.OUTCODE_RIGHT;
+        }
+        if (p.y < rect.top) {
+            code |= Draw.OUTCODE_TOP;
+        }
+        else if (p.y > rect.bottom) {
+            code |= Draw.OUTCODE_BOTTOM;
+        }
+        return code;
+    }
+    static clipLine(rect, line) {
+        const xmin = rect.left;
+        const ymin = rect.top;
+        const xmax = rect.right;
+        const ymax = rect.bottom;
+        let outcode1 = Draw.computeOutCode(rect, new Point(line.startX, line.startY));
+        let outcode2 = Draw.computeOutCode(rect, new Point(line.endX, line.endY));
+        let accept = false;
+        while (true) {
+            if ((outcode1 | outcode2) === 0) {
+                accept = true;
+                break;
+            }
+            else if ((outcode1 & outcode2) !== 0) {
+                break;
+            }
+            else {
+                const outcodeOut = outcode1 !== 0 ? outcode1 : outcode2;
+                let x = 0;
+                let y = 0;
+                if ((outcodeOut & Draw.OUTCODE_TOP) !== 0) {
+                    x =
+                        line.startX +
+                            Math.trunc((line.dx * (ymin - line.startY)) / line.dy);
+                    y = ymin;
+                }
+                else if ((outcodeOut & Draw.OUTCODE_BOTTOM) !== 0) {
+                    x =
+                        line.startX +
+                            Math.trunc((line.dx * (ymax - line.startY)) / line.dy);
+                    y = ymax;
+                }
+                else if ((outcodeOut & Draw.OUTCODE_RIGHT) !== 0) {
+                    y =
+                        line.startY +
+                            Math.trunc((line.dy * (xmax - line.startX)) / line.dx);
+                    x = xmax;
+                }
+                else if ((outcodeOut & Draw.OUTCODE_LEFT) !== 0) {
+                    y =
+                        line.startY +
+                            Math.trunc((line.dy * (xmin - line.startX)) / line.dx);
+                    x = xmin;
+                }
+                if (outcodeOut === outcode1) {
+                    line.moveStart(x, y);
+                    outcode1 = Draw.computeOutCode(rect, new Point(line.startX, line.startY));
+                }
+                else {
+                    line.moveEnd(x, y);
+                    outcode2 = Draw.computeOutCode(rect, new Point(line.endX, line.endY));
+                }
+            }
+        }
+        return accept;
+    }
+    static testPixelLabColorDistance(src, x, y, refColor, threshold) {
+        const pixel = src.getPixel(x, y);
+        const compareAlpha = refColor.length > 3;
+        const pixelColor = color_Color.rgbToLab(color_Color.getRed(pixel), color_Color.getGreen(pixel), color_Color.getBlue(pixel));
+        if (compareAlpha) {
+            pixelColor.push(color_Color.getAlpha(pixel));
+        }
+        return color_Color.distance(pixelColor, refColor, compareAlpha) > threshold;
+    }
+    static fill4(src, x, y, array, mark, visited) {
+        let _x = x;
+        let _y = y;
+        if (visited[_y * src.width + _x] === 1) {
+            return;
+        }
+        while (true) {
+            const ox = _x;
+            const oy = _y;
+            while (_y !== 0 && !array(_y - 1, _x)) {
+                _y--;
+            }
+            while (_x !== 0 && !array(_y, _x - 1)) {
+                _x--;
+            }
+            if (_x === ox && _y === oy) {
+                break;
+            }
+        }
+        Draw.fill4Core(src, _x, _y, array, mark, visited);
+    }
+    static fill4Core(src, x, y, array, mark, visited) {
+        let _x = x;
+        let _y = y;
+        if (visited[_y * src.width + _x] === 1) {
+            return;
+        }
+        let lastRowLength = 0;
+        do {
+            let rowLength = 0;
+            let sx = _x;
+            if (lastRowLength !== 0 && array(_y, _x)) {
+                do {
+                    if (--lastRowLength === 0) {
+                        return;
+                    }
+                } while (array(_y, ++_x));
+                sx = _x;
+            }
+            else {
+                for (; _x !== 0 && !array(_y, _x - 1); rowLength++, lastRowLength++) {
+                    mark(_y, --_x);
+                    if (_y !== 0 && !array(_y - 1, _x)) {
+                        Draw.fill4(src, _x, _y - 1, array, mark, visited);
+                    }
+                }
+            }
+            for (; sx < src.width && !array(_y, sx); rowLength++, sx++) {
+                mark(_y, sx);
+            }
+            if (rowLength < lastRowLength) {
+                for (const end = _x + lastRowLength; ++sx < end;) {
+                    if (!array(_y, sx)) {
+                        Draw.fill4Core(src, sx, _y, array, mark, visited);
+                    }
+                }
+            }
+            else if (rowLength > lastRowLength && _y !== 0) {
+                for (let ux = _x + lastRowLength; ++ux < sx;) {
+                    if (!array(_y - 1, ux)) {
+                        Draw.fill4(src, ux, _y - 1, array, mark, visited);
+                    }
+                }
+            }
+            lastRowLength = rowLength;
+        } while (lastRowLength !== 0 && ++_y < src.height);
+    }
+    static drawCircle(image, center, radius, color) {
+        const points = Draw.calculateCircumference(image, center, radius);
+        for (const p of points) {
+            Draw.drawPixel(image, p, color);
+        }
+        return image;
+    }
+    static fillCircle(image, center, radius, color) {
+        const points = Draw.calculateCircumference(image, center, radius);
+        points.sort((a, b) => (a.x === b.x ? a.y - b.y : a.x - b.x));
+        if (points.length > 0) {
+            let start = points[0];
+            let end = points[0];
+            for (let i = 1; i < points.length; i++) {
+                const p = points[i];
+                if (p.x === start.x) {
+                    end = p;
+                }
+                else {
+                    Draw.drawLine({
+                        image: image,
+                        line: new Line(start.xt, start.yt, end.xt, end.yt),
+                        color: color,
+                    });
+                    start = p;
+                    end = p;
+                }
+            }
+            Draw.drawLine({
+                image: image,
+                line: new Line(start.xt, start.yt, end.xt, end.yt),
+                color: color,
+            });
+        }
+        return image;
+    }
+    static drawImage(options) {
+        var _a, _b, _c, _d, _e, _f, _g, _h, _j;
+        const dstX = (_a = options.dstX) !== null && _a !== void 0 ? _a : 0;
+        const dstY = (_b = options.dstY) !== null && _b !== void 0 ? _b : 0;
+        const srcX = (_c = options.srcX) !== null && _c !== void 0 ? _c : 0;
+        const srcY = (_d = options.srcY) !== null && _d !== void 0 ? _d : 0;
+        const srcW = (_e = options.srcW) !== null && _e !== void 0 ? _e : options.src.width;
+        const srcH = (_f = options.srcH) !== null && _f !== void 0 ? _f : options.src.height;
+        const dstW = (_g = options.dstW) !== null && _g !== void 0 ? _g : Math.min(options.dst.width, options.src.width);
+        const dstH = (_h = options.dstH) !== null && _h !== void 0 ? _h : Math.min(options.dst.height, options.src.height);
+        const blend = (_j = options.blend) !== null && _j !== void 0 ? _j : true;
+        if (blend) {
+            for (let y = 0; y < dstH; ++y) {
+                for (let x = 0; x < dstW; ++x) {
+                    const stepX = Math.trunc(x * (srcW / dstW));
+                    const stepY = Math.trunc(y * (srcH / dstH));
+                    const srcPixel = options.src.getPixel(srcX + stepX, srcY + stepY);
+                    const point = new Point(dstX + x, dstY + y);
+                    Draw.drawPixel(options.dst, point, srcPixel);
+                }
+            }
+        }
+        else {
+            for (let y = 0; y < dstH; ++y) {
+                for (let x = 0; x < dstW; ++x) {
+                    const stepX = Math.trunc(x * (srcW / dstW));
+                    const stepY = Math.trunc(y * (srcH / dstH));
+                    const srcPixel = options.src.getPixel(srcX + stepX, srcY + stepY);
+                    options.dst.setPixel(dstX + x, dstY + y, srcPixel);
+                }
+            }
+        }
+        return options.dst;
+    }
+    static drawLine(options) {
+        var _a;
+        const line = Line.from(options.line);
+        const isClipped = Draw.clipLine(new Rectangle(0, 0, options.image.width - 1, options.image.height - 1), line);
+        if (!isClipped) {
+            return options.image;
+        }
+        const thickness = (_a = options.thickness) !== null && _a !== void 0 ? _a : 1;
+        const radius = Math.floor(thickness / 2);
+        if (line.dx === 0 && line.dy === 0) {
+            thickness === 1
+                ? Draw.drawPixel(options.image, new Point(line.startX, line.startY), options.color)
+                : Draw.fillCircle(options.image, new Point(line.startX, line.startY), radius, options.color);
+            return options.image;
+        }
+        if (line.dx === 0) {
+            for (let y = line.startY; y <= line.endY; ++y) {
+                if (thickness <= 1) {
+                    const point = new Point(line.startX, y);
+                    Draw.drawPixel(options.image, point, options.color);
+                }
+                else {
+                    for (let i = 0; i < thickness; i++) {
+                        const point = new Point(line.startX - radius + i, y);
+                        Draw.drawPixel(options.image, point, options.color);
+                    }
+                }
+            }
+            return options.image;
+        }
+        else if (line.dy === 0) {
+            for (let x = line.startX; x <= line.endX; ++x) {
+                if (thickness <= 1) {
+                    const point = new Point(x, line.startY);
+                    Draw.drawPixel(options.image, point, options.color);
+                }
+                else {
+                    for (let i = 0; i < thickness; i++) {
+                        const point = new Point(x, line.startY - radius + i);
+                        Draw.drawPixel(options.image, point, options.color);
+                    }
+                }
+            }
+            return options.image;
+        }
+        const xor = (n) => (~n + 0x10000) & 0xffff;
+        if (!options.antialias) {
+            if (line.dy <= line.dx) {
+                const ac = Math.cos(Math.atan2(line.dy, line.dx));
+                let wid = 0;
+                if (ac !== 0) {
+                    wid = Math.trunc(thickness / ac);
+                }
+                else {
+                    wid = 1;
+                }
+                if (wid === 0) {
+                    wid = 1;
+                }
+                let d = 2 * line.dy - line.dx;
+                const incr1 = 2 * line.dy;
+                const incr2 = 2 * (line.dy - line.dx);
+                let x = line.startX;
+                let y = line.startY;
+                let wstart = Math.trunc(y - wid / 2);
+                for (let w = wstart; w < wstart + wid; w++) {
+                    const point = new Point(x, w);
+                    Draw.drawPixel(options.image, point, options.color);
+                }
+                if (line.dy > 0) {
+                    while (x < line.endX) {
+                        x++;
+                        if (d < 0) {
+                            d += incr1;
+                        }
+                        else {
+                            y++;
+                            d += incr2;
+                        }
+                        wstart = Math.trunc(y - wid / 2);
+                        for (let w = wstart; w < wstart + wid; w++) {
+                            const point = new Point(x, w);
+                            Draw.drawPixel(options.image, point, options.color);
+                        }
+                    }
+                }
+                else {
+                    while (x < line.endX) {
+                        x++;
+                        if (d < 0) {
+                            d += incr1;
+                        }
+                        else {
+                            y--;
+                            d += incr2;
+                        }
+                        wstart = Math.trunc(y - wid / 2);
+                        for (let w = wstart; w < wstart + wid; w++) {
+                            const point = new Point(x, w);
+                            Draw.drawPixel(options.image, point, options.color);
+                        }
+                    }
+                }
+            }
+            else {
+                const as = Math.sin(Math.atan2(line.dy, line.dx));
+                let wid = 0;
+                if (as !== 0) {
+                    wid = Math.trunc(thickness / as);
+                }
+                else {
+                    wid = 1;
+                }
+                if (wid === 0) {
+                    wid = 1;
+                }
+                let d = 2 * line.dx - line.dy;
+                const incr1 = 2 * line.dx;
+                const incr2 = 2 * (line.dx - line.dy);
+                let x = line.startX;
+                let y = line.startY;
+                let wstart = Math.trunc(x - wid / 2);
+                for (let w = wstart; w < wstart + wid; w++) {
+                    const point = new Point(w, y);
+                    Draw.drawPixel(options.image, point, options.color);
+                }
+                if (line.endX - line.startX > 0) {
+                    while (y < line.endY) {
+                        y++;
+                        if (d < 0) {
+                            d += incr1;
+                        }
+                        else {
+                            x++;
+                            d += incr2;
+                        }
+                        wstart = Math.trunc(x - wid / 2);
+                        for (let w = wstart; w < wstart + wid; w++) {
+                            const point = new Point(w, y);
+                            Draw.drawPixel(options.image, point, options.color);
+                        }
+                    }
+                }
+                else {
+                    while (y < line.endY) {
+                        y++;
+                        if (d < 0) {
+                            d += incr1;
+                        }
+                        else {
+                            x--;
+                            d += incr2;
+                        }
+                        wstart = Math.trunc(x - wid / 2);
+                        for (let w = wstart; w < wstart + wid; w++) {
+                            const point = new Point(w, y);
+                            Draw.drawPixel(options.image, point, options.color);
+                        }
+                    }
+                }
+            }
+            return options.image;
+        }
+        const ag = line.dy < line.dx
+            ? Math.cos(Math.atan2(line.dy, line.dx))
+            : Math.sin(Math.atan2(line.dy, line.dx));
+        let wid = 0;
+        if (ag !== 0) {
+            wid = Math.trunc(Math.abs(thickness / ag));
+        }
+        else {
+            wid = 1;
+        }
+        if (wid === 0) {
+            wid = 1;
+        }
+        if (line.dx > line.dy) {
+            let y = line.startY;
+            const inc = Math.trunc((line.dy * 65536) / line.dx);
+            let frac = 0;
+            for (let x = line.startX; x <= line.endX; x++) {
+                const wstart = y - Math.trunc(wid / 2);
+                for (let w = wstart; w < wstart + wid; w++) {
+                    const point = new Point(x, w);
+                    Draw.drawPixel(options.image, point, options.color, (frac >> 8) & 0xff);
+                    point.offset(0, 1);
+                    Draw.drawPixel(options.image, point, options.color, (xor(frac) >> 8) & 0xff);
+                }
+                frac += inc;
+                if (frac >= 65536) {
+                    frac -= 65536;
+                    y++;
+                }
+                else if (frac < 0) {
+                    frac += 65536;
+                    y--;
+                }
+            }
+        }
+        else {
+            let x = line.startX;
+            const inc = Math.trunc((line.dx * 65536) / line.dy);
+            let frac = 0;
+            for (let y = line.startY; y <= line.endY; y++) {
+                const wstart = x - Math.trunc(wid / 2);
+                for (let w = wstart; w < wstart + wid; w++) {
+                    const point = new Point(w, y);
+                    Draw.drawPixel(options.image, point, options.color, (frac >> 8) & 0xff);
+                    point.offset(1, 0);
+                    Draw.drawPixel(options.image, point, options.color, (xor(frac) >> 8) & 0xff);
+                }
+                frac += inc;
+                if (frac >= 65536) {
+                    frac -= 65536;
+                    x++;
+                }
+                else if (frac < 0) {
+                    frac += 65536;
+                    x--;
+                }
+            }
+        }
+        return options.image;
+    }
+    static drawPixel(image, pos, color, opacity = 0xff) {
+        if (image.boundsSafe(pos.xt, pos.yt)) {
+            const index = image.getBufferIndex(pos.xt, pos.yt);
+            const dst = image.getPixelByIndex(index);
+            image.setPixelByIndex(index, color_Color.alphaBlendColors(dst, color, opacity));
+        }
+        return image;
+    }
+    static drawRect(dst, rect, color) {
+        Draw.drawLine({
+            image: dst,
+            line: new Line(rect.left, rect.top, rect.right, rect.top),
+            color: color,
+        });
+        Draw.drawLine({
+            image: dst,
+            line: new Line(rect.right, rect.top, rect.right, rect.bottom),
+            color: color,
+        });
+        Draw.drawLine({
+            image: dst,
+            line: new Line(rect.right, rect.bottom, rect.left, rect.bottom),
+            color: color,
+        });
+        Draw.drawLine({
+            image: dst,
+            line: new Line(rect.left, rect.bottom, rect.left, rect.top),
+            color: color,
+        });
+        return dst;
+    }
+    static fillFlood(options) {
+        var _a, _b;
+        const threshold = (_a = options.threshold) !== null && _a !== void 0 ? _a : 0;
+        const compareAlpha = (_b = options.compareAlpha) !== null && _b !== void 0 ? _b : false;
+        const visited = new Uint8Array(options.src.width * options.src.height);
+        let srcColor = options.src.getPixel(options.x, options.y);
+        if (!compareAlpha) {
+            srcColor = color_Color.setAlpha(srcColor, 0);
+        }
+        let array = undefined;
+        if (threshold > 0) {
+            const lab = color_Color.rgbToLab(color_Color.getRed(srcColor), color_Color.getGreen(srcColor), color_Color.getBlue(srcColor));
+            if (compareAlpha) {
+                lab.push(color_Color.getAlpha(srcColor));
+            }
+            array = (y, x) => visited[y * options.src.width + x] === 0 &&
+                Draw.testPixelLabColorDistance(options.src, x, y, lab, threshold);
+        }
+        else if (!compareAlpha) {
+            array = (y, x) => visited[y * options.src.width + x] === 0 &&
+                color_Color.setAlpha(options.src.getPixel(x, y), 0) !== srcColor;
+        }
+        else {
+            array = (y, x) => visited[y * options.src.width + x] === 0 &&
+                options.src.getPixel(x, y) !== srcColor;
+        }
+        const mark = (y, x) => {
+            options.src.setPixel(x, y, options.color);
+            visited[y * options.src.width + x] = 1;
+        };
+        Draw.fill4(options.src, options.x, options.y, array, mark, visited);
+        return options.src;
+    }
+    static maskFlood(options) {
+        var _a, _b, _c;
+        const threshold = (_a = options.threshold) !== null && _a !== void 0 ? _a : 0;
+        const compareAlpha = (_b = options.compareAlpha) !== null && _b !== void 0 ? _b : false;
+        const fillValue = (_c = options.fillValue) !== null && _c !== void 0 ? _c : 255;
+        const visited = new Uint8Array(options.src.width * options.src.height);
+        let srcColor = options.src.getPixel(options.x, options.y);
+        if (!compareAlpha) {
+            srcColor = color_Color.setAlpha(srcColor, 0);
+        }
+        const ret = new Uint8Array(options.src.width * options.src.height);
+        let array = undefined;
+        if (threshold > 0) {
+            const lab = color_Color.rgbToLab(color_Color.getRed(srcColor), color_Color.getGreen(srcColor), color_Color.getBlue(srcColor));
+            if (compareAlpha) {
+                lab.push(color_Color.getAlpha(srcColor));
+            }
+            array = (y, x) => visited[y * options.src.width + x] === 0 &&
+                (ret[y * options.src.width + x] !== 0 ||
+                    Draw.testPixelLabColorDistance(options.src, x, y, lab, threshold));
+        }
+        else if (!compareAlpha) {
+            array = (y, x) => visited[y * options.src.width + x] === 0 &&
+                (ret[y * options.src.width + x] !== 0 ||
+                    color_Color.setAlpha(options.src.getPixel(x, y), 0) !== srcColor);
+        }
+        else {
+            array = (y, x) => visited[y * options.src.width + x] === 0 &&
+                (ret[y * options.src.width + x] !== 0 ||
+                    options.src.getPixel(x, y) !== srcColor);
+        }
+        const mark = (y, x) => {
+            ret[y * options.src.width + x] = fillValue;
+            visited[y * options.src.width + x] = 1;
+        };
+        Draw.fill4(options.src, options.x, options.y, array, mark, visited);
+        return ret;
+    }
+    static fillRect(src, rect, color) {
+        const _x0 = MathOperators.clamp(rect.left, 0, src.width - 1);
+        const _y0 = MathOperators.clamp(rect.top, 0, src.height - 1);
+        const _x1 = MathOperators.clamp(rect.right, 0, src.width - 1);
+        const _y1 = MathOperators.clamp(rect.bottom, 0, src.height - 1);
+        if (color_Color.getAlpha(color) === 255) {
+            const w = src.width;
+            let start = _y0 * w + _x0;
+            let end = start + (_x1 - _x0) + 1;
+            for (let sy = _y0; sy <= _y1; ++sy) {
+                src.data.fill(color, start, end);
+                start += w;
+                end += w;
+            }
+        }
+        else {
+            for (let sy = _y0; sy <= _y1; ++sy) {
+                let pi = sy * src.width + _x0;
+                for (let sx = _x0; sx <= _x1; ++sx, ++pi) {
+                    src.setPixelByIndex(pi, color_Color.alphaBlendColors(src.getPixelByIndex(pi), color));
+                }
+            }
+        }
+        return src;
+    }
+    static fill(image, color) {
+        return image.fill(color);
+    }
+}
+Draw.OUTCODE_INSIDE = 0;
+Draw.OUTCODE_LEFT = 1;
+Draw.OUTCODE_RIGHT = 2;
+Draw.OUTCODE_BOTTOM = 4;
+Draw.OUTCODE_TOP = 8;
+//# sourceMappingURL=draw.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/transform/image-transform.js
+
+
+
+
+
+
+
+
+
+
+class ImageTransform {
+    static copyRotate(src, angle, interpolation = Interpolation.nearest) {
+        const nangle = angle % 360.0;
+        if (nangle % 90 === 0) {
+            const wm1 = src.width - 1;
+            const hm1 = src.height - 1;
+            const iangle = Math.floor(nangle / 90.0);
+            switch (iangle) {
+                case 1: {
+                    const dst = new MemoryImage({
+                        width: src.height,
+                        height: src.width,
+                        rgbChannelSet: src.rgbChannelSet,
+                        exifData: src.exifData,
+                        iccProfile: src.iccProfile,
+                    });
+                    for (let y = 0; y < dst.height; ++y) {
+                        for (let x = 0; x < dst.width; ++x) {
+                            dst.setPixel(x, y, src.getPixel(y, hm1 - x));
+                        }
+                    }
+                    return dst;
+                }
+                case 2: {
+                    const dst = new MemoryImage({
+                        width: src.width,
+                        height: src.height,
+                        rgbChannelSet: src.rgbChannelSet,
+                        exifData: src.exifData,
+                        iccProfile: src.iccProfile,
+                    });
+                    for (let y = 0; y < dst.height; ++y) {
+                        for (let x = 0; x < dst.width; ++x) {
+                            dst.setPixel(x, y, src.getPixel(wm1 - x, hm1 - y));
+                        }
+                    }
+                    return dst;
+                }
+                case 3: {
+                    const dst = new MemoryImage({
+                        width: src.height,
+                        height: src.width,
+                        rgbChannelSet: src.rgbChannelSet,
+                        exifData: src.exifData,
+                        iccProfile: src.iccProfile,
+                    });
+                    for (let y = 0; y < dst.height; ++y) {
+                        for (let x = 0; x < dst.width; ++x) {
+                            dst.setPixel(x, y, src.getPixel(wm1 - y, x));
+                        }
+                    }
+                    return dst;
+                }
+                default: {
+                    return MemoryImage.from(src);
+                }
+            }
+        }
+        const rad = (nangle * Math.PI) / 180.0;
+        const ca = Math.cos(rad);
+        const sa = Math.sin(rad);
+        const ux = Math.abs(src.width * ca);
+        const uy = Math.abs(src.width * sa);
+        const vx = Math.abs(src.height * sa);
+        const vy = Math.abs(src.height * ca);
+        const w2 = 0.5 * src.width;
+        const h2 = 0.5 * src.height;
+        const dw2 = 0.5 * (ux + vx);
+        const dh2 = 0.5 * (uy + vy);
+        const dst = new MemoryImage({
+            width: Math.trunc(ux + vx),
+            height: Math.trunc(uy + vy),
+            rgbChannelSet: RgbChannelSet.rgba,
+            exifData: src.exifData,
+            iccProfile: src.iccProfile,
+        });
+        for (let y = 0; y < dst.height; ++y) {
+            for (let x = 0; x < dst.width; ++x) {
+                const c = src.getPixelInterpolate(w2 + (x - dw2) * ca + (y - dh2) * sa, h2 - (x - dw2) * sa + (y - dh2) * ca, interpolation);
+                dst.setPixel(x, y, c);
+            }
+        }
+        return dst;
+    }
+    static bakeOrientation(image) {
+        const bakedImage = MemoryImage.from(image);
+        if (!image.exifData.imageIfd.hasOrientation ||
+            image.exifData.imageIfd.orientation === 1) {
+            return bakedImage;
+        }
+        bakedImage.exifData = ExifData.from(image.exifData);
+        bakedImage.exifData.imageIfd.orientation = undefined;
+        switch (image.exifData.imageIfd.orientation) {
+            case 2:
+                return ImageTransform.flipHorizontal(bakedImage);
+            case 3:
+                return ImageTransform.flip(bakedImage, FlipDirection.both);
+            case 4: {
+                const rotated = ImageTransform.copyRotate(bakedImage, 180);
+                return ImageTransform.flipHorizontal(rotated);
+            }
+            case 5: {
+                const rotated = ImageTransform.copyRotate(bakedImage, 90);
+                return ImageTransform.flipHorizontal(rotated);
+            }
+            case 6:
+                return ImageTransform.copyRotate(bakedImage, 90);
+            case 7: {
+                const rotated = ImageTransform.copyRotate(bakedImage, -90);
+                return ImageTransform.flipHorizontal(rotated);
+            }
+            case 8:
+                return ImageTransform.copyRotate(bakedImage, -90);
+        }
+        return bakedImage;
+    }
+    static copyResize(options) {
+        var _a, _b, _c;
+        (_a = options.interpolation) !== null && _a !== void 0 ? _a : (options.interpolation = Interpolation.nearest);
+        (_b = options.width) !== null && _b !== void 0 ? _b : (options.width = 0);
+        (_c = options.height) !== null && _c !== void 0 ? _c : (options.height = 0);
+        if (options.width === 0 && options.height === 0) {
+            throw new ImageError('CopyResize: wrong size');
+        }
+        const src = ImageTransform.bakeOrientation(options.image);
+        if (options.height === 0) {
+            options.height = Math.trunc(options.width * (src.height / src.width));
+        }
+        if (options.width === 0) {
+            options.width = Math.trunc(options.height * (src.width / src.height));
+        }
+        if (options.width === src.width && options.height === src.height) {
+            return src.clone();
+        }
+        const dst = new MemoryImage({
+            width: options.width,
+            height: options.height,
+            rgbChannelSet: src.rgbChannelSet,
+            exifData: src.exifData,
+            iccProfile: src.iccProfile,
+        });
+        const dy = src.height / options.height;
+        const dx = src.width / options.width;
+        if (options.interpolation === Interpolation.average) {
+            const sData = src.getBytes();
+            const sw4 = src.width * 4;
+            for (let y = 0; y < options.height; ++y) {
+                const y1 = Math.trunc(y * dy);
+                let y2 = Math.trunc((y + 1) * dy);
+                if (y2 === y1) {
+                    y2++;
+                }
+                for (let x = 0; x < options.width; ++x) {
+                    const x1 = Math.trunc(x * dx);
+                    let x2 = Math.trunc((x + 1) * dx);
+                    if (x2 === x1) {
+                        x2++;
+                    }
+                    let r = 0;
+                    let g = 0;
+                    let b = 0;
+                    let a = 0;
+                    let np = 0;
+                    for (let sy = y1; sy < y2; ++sy) {
+                        let si = sy * sw4 + x1 * 4;
+                        for (let sx = x1; sx < x2; ++sx, ++np) {
+                            r += sData[si++];
+                            g += sData[si++];
+                            b += sData[si++];
+                            a += sData[si++];
+                        }
+                    }
+                    dst.setPixel(x, y, color_Color.getColor(Math.floor(r / np), Math.floor(g / np), Math.floor(b / np), Math.floor(a / np)));
+                }
+            }
+        }
+        else if (options.interpolation === Interpolation.nearest) {
+            const scaleX = new Int32Array(options.width);
+            for (let x = 0; x < options.width; ++x) {
+                scaleX[x] = Math.trunc(x * dx);
+            }
+            for (let y = 0; y < options.height; ++y) {
+                const y2 = Math.trunc(y * dy);
+                for (let x = 0; x < options.width; ++x) {
+                    dst.setPixel(x, y, src.getPixel(scaleX[x], y2));
+                }
+            }
+        }
+        else {
+            for (let y = 0; y < options.height; ++y) {
+                const y2 = y * dy;
+                for (let x = 0; x < options.width; ++x) {
+                    const x2 = x * dx;
+                    dst.setPixel(x, y, src.getPixelInterpolate(x2, y2, options.interpolation));
+                }
+            }
+        }
+        return dst;
+    }
+    static copyResizeCropSquare(src, size) {
+        if (size <= 0) {
+            throw new ImageError('Invalid size');
+        }
+        let height = size;
+        let width = size;
+        if (src.width < src.height) {
+            height = Math.trunc(size * (src.height / src.width));
+        }
+        else if (src.width > src.height) {
+            width = Math.trunc(size * (src.width / src.height));
+        }
+        const dst = new MemoryImage({
+            width: size,
+            height: size,
+            rgbChannelSet: src.rgbChannelSet,
+            exifData: src.exifData,
+            iccProfile: src.iccProfile,
+        });
+        const dy = src.height / height;
+        const dx = src.width / width;
+        const xOffset = Math.trunc((width - size) / 2);
+        const yOffset = Math.trunc((height - size) / 2);
+        const scaleX = new Int32Array(size);
+        for (let x = 0; x < size; ++x) {
+            scaleX[x] = Math.trunc((x + xOffset) * dx);
+        }
+        for (let y = 0; y < size; ++y) {
+            const y2 = Math.trunc((y + yOffset) * dy);
+            for (let x = 0; x < size; ++x) {
+                dst.setPixel(x, y, src.getPixel(scaleX[x], y2));
+            }
+        }
+        return dst;
+    }
+    static copyInto(options) {
+        var _a, _b, _c, _d, _e, _f, _g, _j;
+        (_a = options.dstX) !== null && _a !== void 0 ? _a : (options.dstX = 0);
+        (_b = options.dstY) !== null && _b !== void 0 ? _b : (options.dstY = 0);
+        (_c = options.srcX) !== null && _c !== void 0 ? _c : (options.srcX = 0);
+        (_d = options.srcY) !== null && _d !== void 0 ? _d : (options.srcY = 0);
+        (_e = options.srcW) !== null && _e !== void 0 ? _e : (options.srcW = options.src.width);
+        (_f = options.srcH) !== null && _f !== void 0 ? _f : (options.srcH = options.src.height);
+        (_g = options.blend) !== null && _g !== void 0 ? _g : (options.blend = true);
+        (_j = options.center) !== null && _j !== void 0 ? _j : (options.center = false);
+        if (options.center) {
+            {
+                let wdt = options.dst.width - options.src.width;
+                if (wdt < 0) {
+                    wdt = 0;
+                }
+                options.dstX = Math.floor(wdt / 2);
+            }
+            {
+                let hight = options.dst.height - options.src.height;
+                if (hight < 0) {
+                    hight = 0;
+                }
+                options.dstY = Math.floor(hight / 2);
+            }
+        }
+        if (options.blend) {
+            for (let y = 0; y < options.srcH; ++y) {
+                for (let x = 0; x < options.srcW; ++x) {
+                    const pos = new Point(options.dstX + x, options.dstY + y);
+                    Draw.drawPixel(options.dst, pos, options.src.getPixel(options.srcX + x, options.srcY + y));
+                }
+            }
+        }
+        else {
+            for (let y = 0; y < options.srcH; ++y) {
+                for (let x = 0; x < options.srcW; ++x) {
+                    options.dst.setPixel(options.dstX + x, options.dstY + y, options.src.getPixel(options.srcX + x, options.srcY + y));
+                }
+            }
+        }
+        return options.dst;
+    }
+    static copyCrop(src, x, y, w, h) {
+        const _x = MathOperators.clampInt(x, 0, src.width - 1);
+        const _y = MathOperators.clampInt(y, 0, src.height - 1);
+        let _w = w;
+        if (_x + _w > src.width) {
+            _w = src.width - _x;
+        }
+        let _h = h;
+        if (_y + _h > src.height) {
+            _h = src.height - _y;
+        }
+        const dst = new MemoryImage({
+            width: _w,
+            height: _h,
+            rgbChannelSet: src.rgbChannelSet,
+            exifData: src.exifData,
+            iccProfile: src.iccProfile,
+        });
+        for (let yi = 0, sy = _y; yi < _h; ++yi, ++sy) {
+            for (let xi = 0, sx = _x; xi < _w; ++xi, ++sx) {
+                dst.setPixel(xi, yi, src.getPixel(sx, sy));
+            }
+        }
+        return dst;
+    }
+    static copyCropCircle(src, radius, center) {
+        const defaultRadius = Math.trunc(Math.min(src.width, src.height) / 2);
+        const c = center !== null && center !== void 0 ? center : new Point(Math.trunc(src.width / 2), Math.trunc(src.height / 2));
+        let r = radius !== null && radius !== void 0 ? radius : defaultRadius;
+        c.move(MathOperators.clampInt(c.x, 0, src.width - 1), MathOperators.clampInt(c.y, 0, src.height - 1));
+        r = r < 1 ? defaultRadius : r;
+        const tlx = Math.trunc(c.x) - r;
+        const tly = Math.trunc(c.y) - r;
+        const dst = new MemoryImage({
+            width: r * 2,
+            height: r * 2,
+            iccProfile: src.iccProfile,
+        });
+        for (let yi = 0, sy = tly; yi < r * 2; ++yi, ++sy) {
+            for (let xi = 0, sx = tlx; xi < r * 2; ++xi, ++sx) {
+                if ((xi - r) * (xi - r) + (yi - r) * (yi - r) <= r * r) {
+                    dst.setPixel(xi, yi, src.getPixelSafe(sx, sy));
+                }
+            }
+        }
+        return dst;
+    }
+    static copyRectify(src, rect, toImage) {
+        const dst = toImage !== null && toImage !== void 0 ? toImage : MemoryImage.from(src);
+        for (let y = 0; y < dst.height; ++y) {
+            const v = y / (dst.height - 1);
+            for (let x = 0; x < dst.width; ++x) {
+                const u = x / (dst.width - 1);
+                const srcPixelCoord = new Point(rect.left, rect.top)
+                    .mul(1 - u)
+                    .mul(1 - v)
+                    .add(new Point(rect.right, rect.top).mul(u).mul(1 - v))
+                    .add(new Point(rect.left, rect.bottom).mul(1 - u).mul(v))
+                    .add(new Point(rect.right, rect.bottom).mul(u).mul(v));
+                const srcPixel = src.getPixel(srcPixelCoord.xt, srcPixelCoord.yt);
+                dst.setPixel(x, y, srcPixel);
+            }
+        }
+        return dst;
+    }
+    static flip(src, direction) {
+        switch (direction) {
+            case FlipDirection.horizontal:
+                ImageTransform.flipHorizontal(src);
+                break;
+            case FlipDirection.vertical:
+                ImageTransform.flipVertical(src);
+                break;
+            case FlipDirection.both:
+                ImageTransform.flipVertical(src);
+                ImageTransform.flipHorizontal(src);
+                break;
+        }
+        return src;
+    }
+    static flipVertical(src) {
+        const w = src.width;
+        const h = src.height;
+        const h2 = Math.floor(h / 2);
+        for (let y = 0; y < h2; ++y) {
+            const y1 = y * w;
+            const y2 = (h - 1 - y) * w;
+            for (let x = 0; x < w; ++x) {
+                const t = src.getPixelByIndex(y2 + x);
+                src.setPixelByIndex(y2 + x, src.getPixelByIndex(y1 + x));
+                src.setPixelByIndex(y1 + x, t);
+            }
+        }
+        return src;
+    }
+    static flipHorizontal(src) {
+        const w = src.width;
+        const h = src.height;
+        const w2 = Math.floor(src.width / 2);
+        for (let y = 0; y < h; ++y) {
+            const y1 = y * w;
+            for (let x = 0; x < w2; ++x) {
+                const x2 = w - 1 - x;
+                const t = src.getPixelByIndex(y1 + x2);
+                src.setPixelByIndex(y1 + x2, src.getPixelByIndex(y1 + x));
+                src.setPixelByIndex(y1 + x, t);
+            }
+        }
+        return src;
+    }
+}
+//# sourceMappingURL=image-transform.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/formats/gif/gif-color-map.js
+
+class GifColorMap {
+    constructor(options) {
+        var _a, _b;
+        this._numColors = options.numColors;
+        this._bitsPerPixel =
+            (_a = options.bitsPerPixel) !== null && _a !== void 0 ? _a : GifColorMap.bitSize(options.numColors);
+        this._colors = (_b = options.colors) !== null && _b !== void 0 ? _b : new Uint8Array(options.numColors * 3);
+        this._transparent = options.transparent;
+    }
+    get colors() {
+        return this._colors;
+    }
+    get numColors() {
+        return this._numColors;
+    }
+    get bitsPerPixel() {
+        return this._bitsPerPixel;
+    }
+    set transparent(v) {
+        this._transparent = v;
+    }
+    get transparent() {
+        return this._transparent;
+    }
+    static bitSize(n) {
+        for (let i = 1; i <= 8; i++) {
+            if (1 << i >= n) {
+                return i;
+            }
+        }
+        return 0;
+    }
+    static from(other) {
+        return new GifColorMap({
+            numColors: other.numColors,
+            bitsPerPixel: other.bitsPerPixel,
+            colors: other.colors,
+            transparent: other.transparent,
+        });
+    }
+    getByte(index) {
+        return this._colors[index];
+    }
+    setByte(index, value) {
+        return (this._colors[index] = value);
+    }
+    getColor(index) {
+        const ci = index * 3;
+        const a = index === this._transparent ? 0 : 255;
+        return color_Color.getColor(this._colors[ci], this._colors[ci + 1], this._colors[ci + 2], a);
+    }
+    setColor(index, r, g, b) {
+        const ci = index * 3;
+        this._colors[ci] = r;
+        this._colors[ci + 1] = g;
+        this._colors[ci + 2] = b;
+    }
+    getRed(color) {
+        return this._colors[color * 3];
+    }
+    getGreen(color) {
+        return this._colors[color * 3 + 1];
+    }
+    getBlue(color) {
+        return this._colors[color * 3 + 2];
+    }
+    getAlpha(color) {
+        return color === this._transparent ? 0 : 255;
+    }
+}
+//# sourceMappingURL=gif-color-map.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/formats/gif/gif-image-desc.js
+
+class GifImageDesc {
+    constructor(input) {
+        this._duration = 80;
+        this._clearFrame = true;
+        this._x = input.readUint16();
+        this._y = input.readUint16();
+        this._width = input.readUint16();
+        this._height = input.readUint16();
+        const b = input.readByte();
+        const bitsPerPixel = (b & 0x07) + 1;
+        this._interlaced = (b & 0x40) !== 0;
+        if ((b & 0x80) !== 0) {
+            this._colorMap = new GifColorMap({
+                numColors: 1 << bitsPerPixel,
+            });
+            for (let i = 0; i < this._colorMap.numColors; ++i) {
+                this._colorMap.setColor(i, input.readByte(), input.readByte(), input.readByte());
+            }
+        }
+        this._inputPosition = input.position;
+    }
+    get x() {
+        return this._x;
+    }
+    get y() {
+        return this._y;
+    }
+    get width() {
+        return this._width;
+    }
+    get height() {
+        return this._height;
+    }
+    get interlaced() {
+        return this._interlaced;
+    }
+    get colorMap() {
+        return this._colorMap;
+    }
+    set colorMap(v) {
+        this._colorMap = v;
+    }
+    set duration(v) {
+        this._duration = v;
+    }
+    get duration() {
+        return this._duration;
+    }
+    set clearFrame(v) {
+        this._clearFrame = v;
+    }
+    get clearFrame() {
+        return this._clearFrame;
+    }
+    get inputPosition() {
+        return this._inputPosition;
+    }
+}
+//# sourceMappingURL=gif-image-desc.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/formats/gif/gif-info.js
+class GifInfo {
+    constructor(options) {
+        var _a, _b, _c, _d, _e, _f;
+        this._isGif89 = false;
+        this._width = (_a = options === null || options === void 0 ? void 0 : options.width) !== null && _a !== void 0 ? _a : 0;
+        this._height = (_b = options === null || options === void 0 ? void 0 : options.height) !== null && _b !== void 0 ? _b : 0;
+        this._backgroundColor = (_c = options === null || options === void 0 ? void 0 : options.backgroundColor) !== null && _c !== void 0 ? _c : 0xffffffff;
+        this._frames = (_d = options === null || options === void 0 ? void 0 : options.frames) !== null && _d !== void 0 ? _d : new Array();
+        this._colorResolution = (_e = options === null || options === void 0 ? void 0 : options.colorResolution) !== null && _e !== void 0 ? _e : 0;
+        this._globalColorMap = options === null || options === void 0 ? void 0 : options.globalColorMap;
+        this._isGif89 = (_f = options === null || options === void 0 ? void 0 : options.isGif89) !== null && _f !== void 0 ? _f : false;
+    }
+    get width() {
+        return this._width;
+    }
+    get height() {
+        return this._height;
+    }
+    get backgroundColor() {
+        return this._backgroundColor;
+    }
+    get frames() {
+        return this._frames;
+    }
+    get colorResolution() {
+        return this._colorResolution;
+    }
+    get globalColorMap() {
+        return this._globalColorMap;
+    }
+    get isGif89() {
+        return this._isGif89;
+    }
+    get numFrames() {
+        return this.frames.length;
+    }
+}
+//# sourceMappingURL=gif-info.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/formats/gif-decoder.js
+
+
+
+
+
+
+
+
+
+
+class GifDecoder {
+    constructor(bytes) {
+        this.repeat = 0;
+        this.bitsPerPixel = 0;
+        this.currentShiftDWord = 0;
+        this.currentShiftState = 0;
+        this.stackPtr = 0;
+        this.lastCode = 0;
+        this.maxCode1 = 0;
+        this.runningBits = 0;
+        this.runningCode = 0;
+        this.eofCode = 0;
+        this.clearCode = 0;
+        if (bytes !== undefined) {
+            this.startDecode(bytes);
+        }
+    }
+    get numFrames() {
+        return this.info !== undefined ? this.info.numFrames : 0;
+    }
+    static getPrefixChar(prefix, code, clearCode) {
+        let c = code;
+        let i = 0;
+        while (c > clearCode && i++ <= GifDecoder.LZ_MAX_CODE) {
+            if (c > GifDecoder.LZ_MAX_CODE) {
+                return GifDecoder.NO_SUCH_CODE;
+            }
+            c = prefix[code];
+        }
+        return c;
+    }
+    static updateImage(image, y, colorMap, line) {
+        if (colorMap !== undefined) {
+            for (let x = 0, width = line.length; x < width; ++x) {
+                image.setPixel(x, y, colorMap.getColor(line[x]));
+            }
+        }
+    }
+    getInfo() {
+        if (this.input === undefined) {
+            return false;
+        }
+        const tag = this.input.readString(GifDecoder.STAMP_SIZE);
+        if (tag !== GifDecoder.GIF87_STAMP && tag !== GifDecoder.GIF89_STAMP) {
+            return false;
+        }
+        const width = this.input.readUint16();
+        const height = this.input.readUint16();
+        const b = this.input.readByte();
+        const colorResolution = (((b & 0x70) + 1) >> 4) + 1;
+        const bitsPerPixel = (b & 0x07) + 1;
+        const backgroundColor = this.input.readByte();
+        this.input.skip(1);
+        let globalColorMap = undefined;
+        if ((b & 0x80) !== 0) {
+            globalColorMap = new GifColorMap({
+                numColors: 1 << bitsPerPixel,
+            });
+            for (let i = 0; i < globalColorMap.numColors; ++i) {
+                const r = this.input.readByte();
+                const g = this.input.readByte();
+                const b = this.input.readByte();
+                globalColorMap.setColor(i, r, g, b);
+            }
+        }
+        const isGif89 = tag === GifDecoder.GIF89_STAMP;
+        this.info = new GifInfo({
+            width: width,
+            height: height,
+            colorResolution: colorResolution,
+            backgroundColor: backgroundColor,
+            globalColorMap: globalColorMap,
+            isGif89: isGif89,
+        });
+        return true;
+    }
+    skipImage() {
+        if (this.input === undefined || this.input.isEOS) {
+            return undefined;
+        }
+        const gifImage = new GifImageDesc(this.input);
+        this.input.skip(1);
+        this.skipRemainder();
+        return gifImage;
+    }
+    skipRemainder() {
+        if (this.input === undefined || this.input.isEOS) {
+            return true;
+        }
+        let b = this.input.readByte();
+        while (b !== 0 && !this.input.isEOS) {
+            this.input.skip(b);
+            if (this.input.isEOS) {
+                return true;
+            }
+            b = this.input.readByte();
+        }
+        return true;
+    }
+    readApplicationExt(input) {
+        const blockSize = input.readByte();
+        const tag = input.readString(blockSize);
+        if (tag === 'NETSCAPE2.0') {
+            const b1 = input.readByte();
+            const b2 = input.readByte();
+            if (b1 === 0x03 && b2 === 0x01) {
+                this.repeat = input.readUint16();
+            }
+        }
+        else {
+            this.skipRemainder();
+        }
+    }
+    readGraphicsControlExt(input) {
+        input.readByte();
+        const b = input.readByte();
+        const duration = input.readUint16();
+        const transparent = input.readByte();
+        input.readByte();
+        const disposalMethod = (b >> 2) & 0x7;
+        const transparentFlag = b & 0x1;
+        const recordType = input.peekBytes(1).getByte(0);
+        if (recordType === GifDecoder.IMAGE_DESC_RECORD_TYPE) {
+            input.skip(1);
+            const gifImage = this.skipImage();
+            if (gifImage === undefined) {
+                return;
+            }
+            gifImage.duration = duration;
+            gifImage.clearFrame = disposalMethod === 2;
+            if (transparentFlag !== 0) {
+                if (gifImage.colorMap === undefined &&
+                    this.info.globalColorMap !== undefined) {
+                    gifImage.colorMap = GifColorMap.from(this.info.globalColorMap);
+                }
+                if (gifImage.colorMap !== undefined) {
+                    gifImage.colorMap.transparent = transparent;
+                }
+            }
+            this.info.frames.push(gifImage);
+        }
+    }
+    decodeFrameImage(gifImage) {
+        if (this.buffer === undefined) {
+            this.initDecode();
+        }
+        this.bitsPerPixel = this.input.readByte();
+        this.clearCode = 1 << this.bitsPerPixel;
+        this.eofCode = this.clearCode + 1;
+        this.runningCode = this.eofCode + 1;
+        this.runningBits = this.bitsPerPixel + 1;
+        this.maxCode1 = 1 << this.runningBits;
+        this.stackPtr = 0;
+        this.lastCode = GifDecoder.NO_SUCH_CODE;
+        this.currentShiftState = 0;
+        this.currentShiftDWord = 0;
+        this.buffer[0] = 0;
+        this.prefix.fill(GifDecoder.NO_SUCH_CODE, 0, this.prefix.length);
+        const width = gifImage.width;
+        const height = gifImage.height;
+        if (gifImage.x + width > this.info.width ||
+            gifImage.y + height > this.info.height) {
+            return undefined;
+        }
+        const colorMap = gifImage.colorMap !== undefined
+            ? gifImage.colorMap
+            : this.info.globalColorMap;
+        this.pixelCount = width * height;
+        const image = new MemoryImage({
+            width: width,
+            height: height,
+        });
+        const line = new Uint8Array(width);
+        if (gifImage.interlaced) {
+            const row = gifImage.y;
+            for (let i = 0, j = 0; i < 4; ++i) {
+                for (let y = row + GifDecoder.INTERLACED_OFFSET[i]; y < row + height; y += GifDecoder.INTERLACED_JUMP[i], ++j) {
+                    if (!this.getLine(line)) {
+                        return image;
+                    }
+                    GifDecoder.updateImage(image, y, colorMap, line);
+                }
+            }
+        }
+        else {
+            for (let y = 0; y < height; ++y) {
+                if (!this.getLine(line)) {
+                    return image;
+                }
+                GifDecoder.updateImage(image, y, colorMap, line);
+            }
+        }
+        return image;
+    }
+    getLine(line) {
+        this.pixelCount = this.pixelCount - line.length;
+        if (!this.decompressLine(line)) {
+            return false;
+        }
+        if (this.pixelCount === 0) {
+            this.skipRemainder();
+        }
+        return true;
+    }
+    decompressLine(line) {
+        if (this.stackPtr > GifDecoder.LZ_MAX_CODE) {
+            return false;
+        }
+        const lineLen = line.length;
+        let i = 0;
+        if (this.stackPtr !== 0) {
+            while (this.stackPtr !== 0 && i < lineLen) {
+                line[i++] = this.stack[--this.stackPtr];
+            }
+        }
+        let currentPrefix = undefined;
+        while (i < lineLen) {
+            this.currentCode = this.decompressInput();
+            if (this.currentCode === undefined) {
+                return false;
+            }
+            if (this.currentCode === this.eofCode) {
+                return false;
+            }
+            if (this.currentCode === this.clearCode) {
+                for (let j = 0; j <= GifDecoder.LZ_MAX_CODE; j++) {
+                    this.prefix[j] = GifDecoder.NO_SUCH_CODE;
+                }
+                this.runningCode = this.eofCode + 1;
+                this.runningBits = this.bitsPerPixel + 1;
+                this.maxCode1 = 1 << this.runningBits;
+                this.lastCode = GifDecoder.NO_SUCH_CODE;
+            }
+            else {
+                if (this.currentCode < this.clearCode) {
+                    line[i++] = this.currentCode;
+                }
+                else {
+                    if (this.prefix[this.currentCode] === GifDecoder.NO_SUCH_CODE) {
+                        if (this.currentCode === this.runningCode - 2) {
+                            currentPrefix = this.lastCode;
+                            const prefixChar = GifDecoder.getPrefixChar(this.prefix, this.lastCode, this.clearCode);
+                            this.stack[this.stackPtr++] = prefixChar;
+                            this.suffix[this.runningCode - 2] = prefixChar;
+                        }
+                        else {
+                            return false;
+                        }
+                    }
+                    else {
+                        currentPrefix = this.currentCode;
+                    }
+                    let j = 0;
+                    while (j++ <= GifDecoder.LZ_MAX_CODE &&
+                        currentPrefix > this.clearCode &&
+                        currentPrefix <= GifDecoder.LZ_MAX_CODE) {
+                        this.stack[this.stackPtr++] = this.suffix[currentPrefix];
+                        currentPrefix = this.prefix[currentPrefix];
+                    }
+                    if (j >= GifDecoder.LZ_MAX_CODE ||
+                        currentPrefix > GifDecoder.LZ_MAX_CODE) {
+                        return false;
+                    }
+                    this.stack[this.stackPtr++] = currentPrefix;
+                    while (this.stackPtr !== 0 && i < lineLen) {
+                        line[i++] = this.stack[--this.stackPtr];
+                    }
+                }
+                if (this.lastCode !== GifDecoder.NO_SUCH_CODE &&
+                    this.prefix[this.runningCode - 2] === GifDecoder.NO_SUCH_CODE) {
+                    this.prefix[this.runningCode - 2] = this.lastCode;
+                    if (this.currentCode === this.runningCode - 2) {
+                        this.suffix[this.runningCode - 2] = GifDecoder.getPrefixChar(this.prefix, this.lastCode, this.clearCode);
+                    }
+                    else {
+                        this.suffix[this.runningCode - 2] = GifDecoder.getPrefixChar(this.prefix, this.currentCode, this.clearCode);
+                    }
+                }
+                this.lastCode = this.currentCode;
+            }
+        }
+        return true;
+    }
+    decompressInput() {
+        if (this.runningBits > GifDecoder.LZ_BITS) {
+            return undefined;
+        }
+        while (this.currentShiftState < this.runningBits) {
+            const nextByte = this.bufferedInput();
+            this.currentShiftDWord |= nextByte << this.currentShiftState;
+            this.currentShiftState += 8;
+        }
+        const code = this.currentShiftDWord & GifDecoder.CODE_MASKS[this.runningBits];
+        this.currentShiftDWord >>= this.runningBits;
+        this.currentShiftState -= this.runningBits;
+        if (this.runningCode < GifDecoder.LZ_MAX_CODE + 2 &&
+            ++this.runningCode > this.maxCode1 &&
+            this.runningBits < GifDecoder.LZ_BITS) {
+            this.maxCode1 <<= 1;
+            this.runningBits++;
+        }
+        return code;
+    }
+    bufferedInput() {
+        let nextByte = 0;
+        if (this.buffer[0] === 0) {
+            this.buffer[0] = this.input.readByte();
+            if (this.buffer[0] === 0) {
+                return undefined;
+            }
+            const from = this.input.readBytes(this.buffer[0]).toUint8Array();
+            ArrayUtils.setRange(this.buffer, 1, 1 + this.buffer[0], from);
+            nextByte = this.buffer[1];
+            this.buffer[1] = 2;
+            this.buffer[0]--;
+        }
+        else {
+            nextByte = this.buffer[this.buffer[1]++];
+            this.buffer[0]--;
+        }
+        return nextByte;
+    }
+    initDecode() {
+        this.buffer = new Uint8Array(256);
+        this.stack = new Uint8Array(GifDecoder.LZ_MAX_CODE);
+        this.suffix = new Uint8Array(GifDecoder.LZ_MAX_CODE + 1);
+        this.prefix = new Uint32Array(GifDecoder.LZ_MAX_CODE + 1);
+    }
+    isValidFile(bytes) {
+        this.input = new InputBuffer({
+            buffer: bytes,
+        });
+        return this.getInfo();
+    }
+    startDecode(bytes) {
+        this.input = new InputBuffer({
+            buffer: bytes,
+        });
+        if (!this.getInfo()) {
+            return undefined;
+        }
+        try {
+            while (!this.input.isEOS) {
+                const recordType = this.input.readByte();
+                switch (recordType) {
+                    case GifDecoder.IMAGE_DESC_RECORD_TYPE: {
+                        const gifImage = this.skipImage();
+                        if (gifImage === undefined) {
+                            return this.info;
+                        }
+                        this.info.frames.push(gifImage);
+                        break;
+                    }
+                    case GifDecoder.EXTENSION_RECORD_TYPE: {
+                        const extCode = this.input.readByte();
+                        if (extCode === GifDecoder.APPLICATION_EXT) {
+                            this.readApplicationExt(this.input);
+                        }
+                        else if (extCode === GifDecoder.GRAPHIC_CONTROL_EXT) {
+                            this.readGraphicsControlExt(this.input);
+                        }
+                        else {
+                            this.skipRemainder();
+                        }
+                        break;
+                    }
+                    case GifDecoder.TERMINATE_RECORD_TYPE: {
+                        return this.info;
+                    }
+                    default:
+                        break;
+                }
+            }
+        }
+        catch (error) {
+            const strError = JSON.stringify(error);
+            throw new ImageError(strError);
+        }
+        return this.info;
+    }
+    decodeFrame(frame) {
+        if (this.input === undefined || this.info === undefined) {
+            return undefined;
+        }
+        if (frame >= this.info.frames.length || frame < 0) {
+            return undefined;
+        }
+        const gifImage = this.info.frames[frame];
+        this.input.offset = gifImage.inputPosition;
+        return this.decodeFrameImage(this.info.frames[frame]);
+    }
+    decodeHdrFrame(frame) {
+        const img = this.decodeFrame(frame);
+        if (img === undefined) {
+            return undefined;
+        }
+        return HdrImage.fromImage(img);
+    }
+    decodeAnimation(bytes) {
+        if (this.startDecode(bytes) === undefined) {
+            return undefined;
+        }
+        if (this.input === undefined || this.info === undefined) {
+            return undefined;
+        }
+        const animation = new FrameAnimation({
+            width: this.info.width,
+            height: this.info.height,
+            loopCount: this.repeat,
+        });
+        let lastImage = undefined;
+        for (let i = 0; i < this.info.numFrames; ++i) {
+            const frame = this.info.frames[i];
+            const image = this.decodeFrame(i);
+            if (image === undefined) {
+                return undefined;
+            }
+            if (lastImage === undefined) {
+                lastImage = image;
+                lastImage.duration = frame.duration * 10;
+                animation.addFrame(lastImage);
+                continue;
+            }
+            if (image.width === lastImage.width &&
+                image.height === lastImage.height &&
+                frame.x === 0 &&
+                frame.y === 0 &&
+                frame.clearFrame) {
+                lastImage = image;
+                lastImage.duration = frame.duration * 10;
+                animation.addFrame(lastImage);
+                continue;
+            }
+            if (frame.clearFrame) {
+                lastImage = new MemoryImage({
+                    width: lastImage.width,
+                    height: lastImage.height,
+                });
+                const colorMap = frame.colorMap !== undefined
+                    ? frame.colorMap
+                    : this.info.globalColorMap;
+                lastImage.fill(colorMap.getColor(this.info.backgroundColor));
+            }
+            else {
+                lastImage = MemoryImage.from(lastImage);
+            }
+            ImageTransform.copyInto({
+                dst: lastImage,
+                src: image,
+                dstX: frame.x,
+                dstY: frame.y,
+            });
+            lastImage.duration = frame.duration * 10;
+            animation.addFrame(lastImage);
+        }
+        return animation;
+    }
+    decodeImage(bytes, frame = 0) {
+        if (this.startDecode(bytes) === undefined) {
+            return undefined;
+        }
+        return this.decodeFrame(frame);
+    }
+    decodeHdrImage(bytes, frame = 0) {
+        const img = this.decodeImage(bytes, frame);
+        if (img === undefined) {
+            return undefined;
+        }
+        return HdrImage.fromImage(img);
+    }
+}
+GifDecoder.STAMP_SIZE = 6;
+GifDecoder.GIF87_STAMP = 'GIF87a';
+GifDecoder.GIF89_STAMP = 'GIF89a';
+GifDecoder.IMAGE_DESC_RECORD_TYPE = 0x2c;
+GifDecoder.EXTENSION_RECORD_TYPE = 0x21;
+GifDecoder.TERMINATE_RECORD_TYPE = 0x3b;
+GifDecoder.GRAPHIC_CONTROL_EXT = 0xf9;
+GifDecoder.APPLICATION_EXT = 0xff;
+GifDecoder.LZ_MAX_CODE = 4095;
+GifDecoder.LZ_BITS = 12;
+GifDecoder.NO_SUCH_CODE = 4098;
+GifDecoder.CODE_MASKS = [
+    0x0000, 0x0001, 0x0003, 0x0007, 0x000f, 0x001f, 0x003f, 0x007f, 0x00ff,
+    0x01ff, 0x03ff, 0x07ff, 0x0fff,
+];
+GifDecoder.INTERLACED_OFFSET = [0, 4, 2, 1];
+GifDecoder.INTERLACED_JUMP = [8, 8, 4, 2];
+//# sourceMappingURL=gif-decoder.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/common/dither-kernel.js
+var DitherKernel;
+(function (DitherKernel) {
+    DitherKernel[DitherKernel["None"] = 0] = "None";
+    DitherKernel[DitherKernel["FalseFloydSteinberg"] = 1] = "FalseFloydSteinberg";
+    DitherKernel[DitherKernel["FloydSteinberg"] = 2] = "FloydSteinberg";
+    DitherKernel[DitherKernel["Stucki"] = 3] = "Stucki";
+    DitherKernel[DitherKernel["Atkinson"] = 4] = "Atkinson";
+})(DitherKernel || (DitherKernel = {}));
+//# sourceMappingURL=dither-kernel.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/common/dither-pixel.js
+
+class DitherPixel {
+    static getDitherPixels(image, quantizer, kernel, serpentine) {
+        if (kernel === DitherKernel.None) {
+            return quantizer.getIndexMap(image);
+        }
+        const ds = DitherPixel.ditherKernels[kernel];
+        const height = image.height;
+        const width = image.width;
+        const data = new Uint8Array(image.getBytes());
+        const indexedPixels = new Uint8Array(width * height);
+        const colorMap = quantizer.colorMap8;
+        let direction = serpentine ? -1 : 1;
+        let index = 0;
+        for (let y = 0; y < height; y++) {
+            if (serpentine) {
+                direction *= -1;
+            }
+            const x0 = direction === 1 ? 0 : width - 1;
+            const x1 = direction === 1 ? width : 0;
+            for (let x = x0; x !== x1; x += direction, ++index) {
+                let idx = index * 4;
+                const r1 = data[idx];
+                const g1 = data[idx + 1];
+                const b1 = data[idx + 2];
+                idx = quantizer.lookupRGB(r1, g1, b1);
+                indexedPixels[index] = idx;
+                idx *= 3;
+                const r2 = colorMap[idx];
+                const g2 = colorMap[idx + 1];
+                const b2 = colorMap[idx + 2];
+                const er = r1 - r2;
+                const eg = g1 - g2;
+                const eb = b1 - b2;
+                if (er !== 0 || eg !== 0 || eb !== 0) {
+                    const i0 = direction === 1 ? 0 : ds.length - 1;
+                    const i1 = direction === 1 ? ds.length : 0;
+                    for (let i = i0; i !== i1; i += direction) {
+                        const x1 = Math.trunc(ds[i][1]);
+                        const y1 = Math.trunc(ds[i][2]);
+                        if (x1 + x >= 0 &&
+                            x1 + x < width &&
+                            y1 + y >= 0 &&
+                            y1 + y < height) {
+                            const d = ds[i][0];
+                            idx = index + x1 + y1 * width;
+                            idx *= 4;
+                            data[idx] = Math.max(0, Math.min(255, Math.trunc(data[idx] + er * d)));
+                            data[idx + 1] = Math.max(0, Math.min(255, Math.trunc(data[idx + 1] + eg * d)));
+                            data[idx + 2] = Math.max(0, Math.min(255, Math.trunc(data[idx + 2] + eb * d)));
+                        }
+                    }
+                }
+            }
+        }
+        return indexedPixels;
+    }
+}
+DitherPixel.ditherKernels = [
+    [
+        [0, 0, 0],
+        [0, 0, 0],
+        [0, 0, 0],
+    ],
+    [
+        [3 / 8, 1, 0],
+        [3 / 8, 0, 1],
+        [2 / 8, 1, 1],
+    ],
+    [
+        [7 / 16, 1, 0],
+        [3 / 16, -1, 1],
+        [5 / 16, 0, 1],
+        [1 / 16, 1, 1],
+    ],
+    [
+        [8 / 42, 1, 0],
+        [4 / 42, 2, 0],
+        [2 / 42, -2, 1],
+        [4 / 42, -1, 1],
+        [8 / 42, 0, 1],
+        [4 / 42, 1, 1],
+        [2 / 42, 2, 1],
+        [1 / 42, -2, 2],
+        [2 / 42, -1, 2],
+        [4 / 42, 0, 2],
+        [2 / 42, 1, 2],
+        [1 / 42, 2, 2],
+    ],
+    [
+        [1 / 8, 1, 0],
+        [1 / 8, 2, 0],
+        [1 / 8, -1, 1],
+        [1 / 8, 0, 1],
+        [1 / 8, 1, 1],
+        [1 / 8, 0, 2],
+    ],
+];
+//# sourceMappingURL=dither-pixel.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/common/neural-quantizer.js
+
+class NeuralQuantizer {
+    constructor(image, numberOfColors = 256, samplingFactor = 10) {
+        this.netIndex = new Int32Array(256);
+        this.netSize = 16;
+        this.specials = 3;
+        this.bgColor = 0;
+        this.cutNetSize = 0;
+        this.maxNetPos = 0;
+        this.initRadius = 0;
+        this.initBiasRadius = 0;
+        this.samplingFactor = samplingFactor;
+        this.initialize(numberOfColors);
+        this.addImage(image);
+    }
+    get colorMap8() {
+        return this._colorMap8;
+    }
+    get colorMap32() {
+        return this._colorMap32;
+    }
+    get numColors() {
+        return this.netSize;
+    }
+    initialize(numberOfColors) {
+        this.netSize = Math.max(numberOfColors, 4);
+        this.cutNetSize = this.netSize - this.specials;
+        this.maxNetPos = this.netSize - 1;
+        this.initRadius = Math.floor(this.netSize / 8);
+        this.initBiasRadius = this.initRadius * NeuralQuantizer.radiusBias;
+        this._colorMap32 = new Int32Array(this.netSize * 4);
+        this._colorMap8 = new Uint8Array(this.netSize * 3);
+        this.specials = 3;
+        this.bgColor = this.specials - 1;
+        this.radiusPower = new Int32Array(this.netSize >> 3);
+        this.network = new Array(this.netSize * 3).fill(0);
+        this.bias = new Array(this.netSize).fill(0);
+        this.freq = new Array(this.netSize).fill(0);
+        this.network[0] = 0.0;
+        this.network[1] = 0.0;
+        this.network[2] = 0.0;
+        this.network[3] = 255.0;
+        this.network[4] = 255.0;
+        this.network[5] = 255.0;
+        const f = 1.0 / this.netSize;
+        for (let i = 0; i < this.specials; ++i) {
+            this.freq[i] = f;
+            this.bias[i] = 0.0;
+        }
+        for (let i = this.specials, p = this.specials * 3; i < this.netSize; ++i) {
+            this.network[p++] = (255.0 * (i - this.specials)) / this.cutNetSize;
+            this.network[p++] = (255.0 * (i - this.specials)) / this.cutNetSize;
+            this.network[p++] = (255.0 * (i - this.specials)) / this.cutNetSize;
+            this.freq[i] = f;
+            this.bias[i] = 0.0;
+        }
+    }
+    updateRadiusPower(rad, alpha) {
+        for (let i = 0; i < rad; i++) {
+            this.radiusPower[i] = Math.trunc(alpha *
+                (((rad * rad - i * i) * NeuralQuantizer.radiusBias) / (rad * rad)));
+        }
+    }
+    specialFind(b, g, r) {
+        for (let i = 0, p = 0; i < this.specials; i++) {
+            if (this.network[p++] === b &&
+                this.network[p++] === g &&
+                this.network[p++] === r) {
+                return i;
+            }
+        }
+        return -1;
+    }
+    contest(b, g, r) {
+        let bestd = 1.0e30;
+        let bestBiasDist = bestd;
+        let bestpos = -1;
+        let bestbiaspos = bestpos;
+        for (let i = this.specials, p = this.specials * 3; i < this.netSize; i++) {
+            let dist = this.network[p++] - b;
+            if (dist < 0) {
+                dist = -dist;
+            }
+            let a = this.network[p++] - g;
+            if (a < 0) {
+                a = -a;
+            }
+            dist += a;
+            a = this.network[p++] - r;
+            if (a < 0) {
+                a = -a;
+            }
+            dist += a;
+            if (dist < bestd) {
+                bestd = dist;
+                bestpos = i;
+            }
+            const biasDist = dist - this.bias[i];
+            if (biasDist < bestBiasDist) {
+                bestBiasDist = biasDist;
+                bestbiaspos = i;
+            }
+            this.freq[i] -= NeuralQuantizer.beta * this.freq[i];
+            this.bias[i] += NeuralQuantizer.betaGamma * this.freq[i];
+        }
+        this.freq[bestpos] += NeuralQuantizer.beta;
+        this.bias[bestpos] -= NeuralQuantizer.betaGamma;
+        return bestbiaspos;
+    }
+    alterSingle(alpha, i, b, g, r) {
+        const p = i * 3;
+        this.network[p] -= alpha * (this.network[p] - b);
+        this.network[p + 1] -= alpha * (this.network[p + 1] - g);
+        this.network[p + 2] -= alpha * (this.network[p + 2] - r);
+    }
+    alterNeighbors(_, rad, i, b, g, r) {
+        let lo = i - rad;
+        if (lo < this.specials - 1) {
+            lo = this.specials - 1;
+        }
+        let hi = i + rad;
+        if (hi > this.netSize) {
+            hi = this.netSize;
+        }
+        let j = i + 1;
+        let k = i - 1;
+        let m = 1;
+        while (j < hi || k > lo) {
+            const a = this.radiusPower[m++];
+            if (j < hi) {
+                const p = j * 3;
+                this.network[p] -=
+                    (a * (this.network[p] - b)) / NeuralQuantizer.alphaRadiusBias;
+                this.network[p + 1] -=
+                    (a * (this.network[p + 1] - g)) / NeuralQuantizer.alphaRadiusBias;
+                this.network[p + 2] -=
+                    (a * (this.network[p + 2] - r)) / NeuralQuantizer.alphaRadiusBias;
+                j++;
+            }
+            if (k > lo) {
+                const p = k * 3;
+                this.network[p] -=
+                    (a * (this.network[p] - b)) / NeuralQuantizer.alphaRadiusBias;
+                this.network[p + 1] -=
+                    (a * (this.network[p + 1] - g)) / NeuralQuantizer.alphaRadiusBias;
+                this.network[p + 2] -=
+                    (a * (this.network[p + 2] - r)) / NeuralQuantizer.alphaRadiusBias;
+                k--;
+            }
+        }
+    }
+    learn(image) {
+        let biasRadius = this.initBiasRadius;
+        const alphaDec = 30 + Math.floor((this.samplingFactor - 1) / 3);
+        const lengthCount = image.length;
+        const samplePixels = Math.floor(lengthCount / this.samplingFactor);
+        let delta = Math.max(Math.floor(samplePixels / NeuralQuantizer.numCycles), 1);
+        let alpha = NeuralQuantizer.initAlpha;
+        if (delta === 0) {
+            delta = 1;
+        }
+        let rad = biasRadius >> NeuralQuantizer.radiusBiasShift;
+        if (rad <= 1) {
+            rad = 0;
+        }
+        this.updateRadiusPower(rad, alpha);
+        let step = 0;
+        let pos = 0;
+        if (lengthCount < NeuralQuantizer.smallImageBytes) {
+            this.samplingFactor = 1;
+            step = 1;
+        }
+        else if (lengthCount % NeuralQuantizer.prime1 !== 0) {
+            step = NeuralQuantizer.prime1;
+        }
+        else {
+            if (lengthCount % NeuralQuantizer.prime2 !== 0) {
+                step = NeuralQuantizer.prime2;
+            }
+            else {
+                if (lengthCount % NeuralQuantizer.prime3 !== 0) {
+                    step = NeuralQuantizer.prime3;
+                }
+                else {
+                    step = NeuralQuantizer.prime4;
+                }
+            }
+        }
+        let i = 0;
+        while (i < samplePixels) {
+            const p = image.getPixelByIndex(pos);
+            const red = color_Color.getRed(p);
+            const green = color_Color.getGreen(p);
+            const blue = color_Color.getBlue(p);
+            if (i === 0) {
+                this.network[this.bgColor * 3] = blue;
+                this.network[this.bgColor * 3 + 1] = green;
+                this.network[this.bgColor * 3 + 2] = red;
+            }
+            let j = this.specialFind(blue, green, red);
+            j = j < 0 ? this.contest(blue, green, red) : j;
+            if (j >= this.specials) {
+                const a = Number(alpha) / NeuralQuantizer.initAlpha;
+                this.alterSingle(a, j, blue, green, red);
+                if (rad > 0) {
+                    this.alterNeighbors(a, rad, j, blue, green, red);
+                }
+            }
+            pos += step;
+            while (pos >= lengthCount) {
+                pos -= lengthCount;
+            }
+            i++;
+            if (i % delta === 0) {
+                alpha -= Math.floor(alpha / alphaDec);
+                biasRadius -= Math.floor(biasRadius / NeuralQuantizer.radiusDec);
+                rad = biasRadius >> NeuralQuantizer.radiusBiasShift;
+                if (rad <= 1) {
+                    rad = 0;
+                }
+                this.updateRadiusPower(rad, alpha);
+            }
+        }
+    }
+    fix() {
+        for (let i = 0, p = 0, q = 0; i < this.netSize; i++, q += 4) {
+            for (let j = 0; j < 3; ++j, ++p) {
+                let x = Math.trunc(0.5 + this.network[p]);
+                if (x < 0) {
+                    x = 0;
+                }
+                if (x > 255) {
+                    x = 255;
+                }
+                this._colorMap32[q + j] = x;
+            }
+            this._colorMap32[q + 3] = i;
+        }
+    }
+    inxBuild() {
+        let previousColor = 0;
+        let startPos = 0;
+        for (let i = 0, p = 0; i < this.netSize; i++, p += 4) {
+            let smallpos = i;
+            let smallval = this._colorMap32[p + 1];
+            for (let j = i + 1, q = p + 4; j < this.netSize; j++, q += 4) {
+                if (this._colorMap32[q + 1] < smallval) {
+                    smallpos = j;
+                    smallval = this._colorMap32[q + 1];
+                }
+            }
+            const q = smallpos * 4;
+            if (i !== smallpos) {
+                let j = this._colorMap32[q];
+                this._colorMap32[q] = this._colorMap32[p];
+                this._colorMap32[p] = j;
+                j = this._colorMap32[q + 1];
+                this._colorMap32[q + 1] = this._colorMap32[p + 1];
+                this._colorMap32[p + 1] = j;
+                j = this._colorMap32[q + 2];
+                this._colorMap32[q + 2] = this._colorMap32[p + 2];
+                this.colorMap32[p + 2] = j;
+                j = this._colorMap32[q + 3];
+                this._colorMap32[q + 3] = this._colorMap32[p + 3];
+                this._colorMap32[p + 3] = j;
+            }
+            if (smallval !== previousColor) {
+                this.netIndex[previousColor] = (startPos + i) >> 1;
+                for (let j = previousColor + 1; j < smallval; j++) {
+                    this.netIndex[j] = i;
+                }
+                previousColor = smallval;
+                startPos = i;
+            }
+        }
+        this.netIndex[previousColor] = (startPos + this.maxNetPos) >> 1;
+        for (let j = previousColor + 1; j < 256; j++) {
+            this.netIndex[j] = this.maxNetPos;
+        }
+    }
+    copyColorMap() {
+        for (let i = 0, p = 0, q = 0; i < this.netSize; ++i) {
+            this._colorMap8[p++] = Math.abs(this._colorMap32[q + 2]) & 0xff;
+            this._colorMap8[p++] = Math.abs(this._colorMap32[q + 1]) & 0xff;
+            this._colorMap8[p++] = Math.abs(this._colorMap32[q]) & 0xff;
+            q += 4;
+        }
+    }
+    addImage(image) {
+        this.learn(image);
+        this.fix();
+        this.inxBuild();
+        this.copyColorMap();
+    }
+    inxSearch(b, g, r) {
+        let bestd = 1000;
+        let best = -1;
+        let i = this.netIndex[g];
+        let j = i - 1;
+        while (i < this.netSize || j >= 0) {
+            if (i < this.netSize) {
+                const p = i * 4;
+                let dist = this._colorMap32[p + 1] - g;
+                if (dist >= bestd) {
+                    i = this.netSize;
+                }
+                else {
+                    if (dist < 0) {
+                        dist = -dist;
+                    }
+                    let a = this._colorMap32[p] - b;
+                    if (a < 0) {
+                        a = -a;
+                    }
+                    dist += a;
+                    if (dist < bestd) {
+                        a = this._colorMap32[p + 2] - r;
+                        if (a < 0) {
+                            a = -a;
+                        }
+                        dist += a;
+                        if (dist < bestd) {
+                            bestd = dist;
+                            best = i;
+                        }
+                    }
+                    i++;
+                }
+            }
+            if (j >= 0) {
+                const p = j * 4;
+                let dist = g - this._colorMap32[p + 1];
+                if (dist >= bestd) {
+                    j = -1;
+                }
+                else {
+                    if (dist < 0) {
+                        dist = -dist;
+                    }
+                    let a = this._colorMap32[p] - b;
+                    if (a < 0) {
+                        a = -a;
+                    }
+                    dist += a;
+                    if (dist < bestd) {
+                        a = this._colorMap32[p + 2] - r;
+                        if (a < 0) {
+                            a = -a;
+                        }
+                        dist += a;
+                        if (dist < bestd) {
+                            bestd = dist;
+                            best = j;
+                        }
+                    }
+                    j--;
+                }
+            }
+        }
+        return best;
+    }
+    color(index) {
+        return color_Color.getColor(this._colorMap8[index * 3], this._colorMap8[index * 3 + 1], this._colorMap8[index * 3 + 2]);
+    }
+    lookup(c) {
+        const r = color_Color.getRed(c);
+        const g = color_Color.getGreen(c);
+        const b = color_Color.getBlue(c);
+        return this.inxSearch(b, g, r);
+    }
+    lookupRGB(r, g, b) {
+        return this.inxSearch(b, g, r);
+    }
+    getQuantizedColor(c) {
+        const r = color_Color.getRed(c);
+        const g = color_Color.getGreen(c);
+        const b = color_Color.getBlue(c);
+        const a = color_Color.getAlpha(c);
+        const i = this.inxSearch(b, g, r) * 3;
+        return color_Color.getColor(this._colorMap8[i], this._colorMap8[i + 1], this._colorMap8[i + 2], a);
+    }
+    getIndexMap(image) {
+        const map = new Uint8Array(image.width * image.height);
+        for (let i = 0, len = image.length; i < len; ++i) {
+            map[i] = this.lookup(image.getPixelByIndex(i));
+        }
+        return map;
+    }
+}
+NeuralQuantizer.numCycles = 100;
+NeuralQuantizer.alphaBiasShift = 10;
+NeuralQuantizer.initAlpha = 1 << NeuralQuantizer.alphaBiasShift;
+NeuralQuantizer.radiusBiasShift = 8;
+NeuralQuantizer.radiusBias = 1 << NeuralQuantizer.radiusBiasShift;
+NeuralQuantizer.alphaRadiusBiasShift = NeuralQuantizer.alphaBiasShift + NeuralQuantizer.radiusBiasShift;
+NeuralQuantizer.alphaRadiusBias = 1 << NeuralQuantizer.alphaRadiusBiasShift;
+NeuralQuantizer.radiusDec = 30;
+NeuralQuantizer.gamma = 1024;
+NeuralQuantizer.beta = 1 / 1024;
+NeuralQuantizer.betaGamma = NeuralQuantizer.beta * NeuralQuantizer.gamma;
+NeuralQuantizer.prime1 = 499;
+NeuralQuantizer.prime2 = 491;
+NeuralQuantizer.prime3 = 487;
+NeuralQuantizer.prime4 = 503;
+NeuralQuantizer.smallImageBytes = 3 * NeuralQuantizer.prime4;
+//# sourceMappingURL=neural-quantizer.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/formats/gif-encoder.js
+
+
+
+
+
+class GifEncoder {
+    constructor(options) {
+        var _a, _b, _c, _d, _e;
+        this.curAccum = 0;
+        this.curBits = 0;
+        this.nBits = 0;
+        this.initBits = 0;
+        this.EOFCode = 0;
+        this.maxCode = 0;
+        this.clearCode = 0;
+        this.freeEnt = 0;
+        this.clearFlag = false;
+        this.blockSize = 0;
+        this._supportsAnimation = true;
+        this.delay = (_a = options === null || options === void 0 ? void 0 : options.delay) !== null && _a !== void 0 ? _a : 80;
+        this.repeat = (_b = options === null || options === void 0 ? void 0 : options.repeat) !== null && _b !== void 0 ? _b : 0;
+        this.samplingFactor = (_c = options === null || options === void 0 ? void 0 : options.samplingFactor) !== null && _c !== void 0 ? _c : 10;
+        this.dither = (_d = options === null || options === void 0 ? void 0 : options.dither) !== null && _d !== void 0 ? _d : DitherKernel.FloydSteinberg;
+        this.ditherSerpentine = (_e = options === null || options === void 0 ? void 0 : options.ditherSerpentine) !== null && _e !== void 0 ? _e : false;
+        this.encodedFrames = 0;
+    }
+    get supportsAnimation() {
+        return this._supportsAnimation;
+    }
+    addImage(image, width, height, colorMap, numColors) {
+        this.outputBuffer.writeByte(GifEncoder.imageDescRecordType);
+        this.outputBuffer.writeUint16(0);
+        this.outputBuffer.writeUint16(0);
+        this.outputBuffer.writeUint16(width);
+        this.outputBuffer.writeUint16(height);
+        this.outputBuffer.writeByte(0x87);
+        this.outputBuffer.writeBytes(colorMap);
+        for (let i = numColors; i < 256; ++i) {
+            this.outputBuffer.writeByte(0);
+            this.outputBuffer.writeByte(0);
+            this.outputBuffer.writeByte(0);
+        }
+        this.encodeLZW(image, width, height);
+    }
+    encodeLZW(image, width, height) {
+        this.curAccum = 0;
+        this.curBits = 0;
+        this.blockSize = 0;
+        this.block = new Uint8Array(256);
+        const initCodeSize = 8;
+        this.outputBuffer.writeByte(initCodeSize);
+        const hTab = new Int32Array(GifEncoder.hsize);
+        const codeTab = new Int32Array(GifEncoder.hsize);
+        let remaining = width * height;
+        let curPixel = 0;
+        this.initBits = initCodeSize + 1;
+        this.nBits = this.initBits;
+        this.maxCode = (1 << this.nBits) - 1;
+        this.clearCode = 1 << (this.initBits - 1);
+        this.EOFCode = this.clearCode + 1;
+        this.clearFlag = false;
+        this.freeEnt = this.clearCode + 2;
+        const _nextPixel = () => {
+            if (remaining === 0) {
+                return GifEncoder.eof;
+            }
+            --remaining;
+            return image[curPixel++] & 0xff;
+        };
+        let ent = _nextPixel();
+        let hshift = 0;
+        for (let fcode = GifEncoder.hsize; fcode < 65536; fcode *= 2) {
+            hshift++;
+        }
+        hshift = 8 - hshift;
+        const hSizeReg = GifEncoder.hsize;
+        for (let i = 0; i < hSizeReg; ++i) {
+            hTab[i] = -1;
+        }
+        this.output(this.clearCode);
+        let outerLoop = true;
+        while (outerLoop) {
+            outerLoop = false;
+            let c = _nextPixel();
+            while (c !== GifEncoder.eof) {
+                const fcode = (c << GifEncoder.bits) + ent;
+                let i = (c << hshift) ^ ent;
+                if (hTab[i] === fcode) {
+                    ent = codeTab[i];
+                    c = _nextPixel();
+                    continue;
+                }
+                else if (hTab[i] >= 0) {
+                    let disp = hSizeReg - i;
+                    if (i === 0) {
+                        disp = 1;
+                    }
+                    do {
+                        if ((i -= disp) < 0) {
+                            i += hSizeReg;
+                        }
+                        if (hTab[i] === fcode) {
+                            ent = codeTab[i];
+                            outerLoop = true;
+                            break;
+                        }
+                    } while (hTab[i] >= 0);
+                    if (outerLoop) {
+                        break;
+                    }
+                }
+                this.output(ent);
+                ent = c;
+                if (this.freeEnt < 1 << GifEncoder.bits) {
+                    codeTab[i] = this.freeEnt++;
+                    hTab[i] = fcode;
+                }
+                else {
+                    for (let i = 0; i < GifEncoder.hsize; ++i) {
+                        hTab[i] = -1;
+                    }
+                    this.freeEnt = this.clearCode + 2;
+                    this.clearFlag = true;
+                    this.output(this.clearCode);
+                }
+                c = _nextPixel();
+            }
+        }
+        this.output(ent);
+        this.output(this.EOFCode);
+        this.outputBuffer.writeByte(0);
+    }
+    output(code) {
+        this.curAccum &= GifEncoder.masks[this.curBits];
+        if (this.curBits > 0) {
+            this.curAccum |= code << this.curBits;
+        }
+        else {
+            this.curAccum = code;
+        }
+        this.curBits += this.nBits;
+        while (this.curBits >= 8) {
+            this.addToBlock(this.curAccum & 0xff);
+            this.curAccum >>= 8;
+            this.curBits -= 8;
+        }
+        if (this.freeEnt > this.maxCode || this.clearFlag) {
+            if (this.clearFlag) {
+                this.nBits = this.initBits;
+                this.maxCode = (1 << this.nBits) - 1;
+                this.clearFlag = false;
+            }
+            else {
+                ++this.nBits;
+                if (this.nBits === GifEncoder.bits) {
+                    this.maxCode = 1 << GifEncoder.bits;
+                }
+                else {
+                    this.maxCode = (1 << this.nBits) - 1;
+                }
+            }
+        }
+        if (code === this.EOFCode) {
+            while (this.curBits > 0) {
+                this.addToBlock(this.curAccum & 0xff);
+                this.curAccum >>= 8;
+                this.curBits -= 8;
+            }
+            this.writeBlock();
+        }
+    }
+    writeBlock() {
+        if (this.blockSize > 0) {
+            this.outputBuffer.writeByte(this.blockSize);
+            this.outputBuffer.writeBytes(this.block, this.blockSize);
+            this.blockSize = 0;
+        }
+    }
+    addToBlock(c) {
+        this.block[this.blockSize++] = c;
+        if (this.blockSize >= 254) {
+            this.writeBlock();
+        }
+    }
+    writeApplicationExt() {
+        this.outputBuffer.writeByte(GifEncoder.extensionRecordType);
+        this.outputBuffer.writeByte(GifEncoder.applicationExt);
+        this.outputBuffer.writeByte(11);
+        const appCodeUnits = TextCodec.getCodePoints('NETSCAPE2.0');
+        this.outputBuffer.writeBytes(appCodeUnits);
+        this.outputBuffer.writeBytes(new Uint8Array([0x03, 0x01]));
+        this.outputBuffer.writeUint16(this.repeat);
+        this.outputBuffer.writeByte(0);
+    }
+    writeGraphicsCtrlExt() {
+        var _a;
+        this.outputBuffer.writeByte(GifEncoder.extensionRecordType);
+        this.outputBuffer.writeByte(GifEncoder.graphicControlExt);
+        this.outputBuffer.writeByte(4);
+        const transparency = 0;
+        const dispose = 0;
+        this.outputBuffer.writeByte(0 | dispose | 0 | transparency);
+        this.outputBuffer.writeUint16((_a = this.lastImageDuration) !== null && _a !== void 0 ? _a : this.delay);
+        this.outputBuffer.writeByte(0);
+        this.outputBuffer.writeByte(0);
+    }
+    writeHeader(width, height) {
+        const idCodeUnits = TextCodec.getCodePoints(GifEncoder.gif89Id);
+        this.outputBuffer.writeBytes(idCodeUnits);
+        this.outputBuffer.writeUint16(width);
+        this.outputBuffer.writeUint16(height);
+        this.outputBuffer.writeByte(0);
+        this.outputBuffer.writeByte(0);
+        this.outputBuffer.writeByte(0);
+    }
+    finish() {
+        let bytes = undefined;
+        if (this.outputBuffer === undefined) {
+            return bytes;
+        }
+        if (this.encodedFrames === 0) {
+            this.writeHeader(this.width, this.height);
+            this.writeApplicationExt();
+        }
+        else {
+            this.writeGraphicsCtrlExt();
+        }
+        this.addImage(this.lastImage, this.width, this.height, this.lastColorMap.colorMap8, 256);
+        this.outputBuffer.writeByte(GifEncoder.terminateRecordType);
+        this.lastImage = undefined;
+        this.lastColorMap = undefined;
+        this.encodedFrames = 0;
+        bytes = this.outputBuffer.getBytes();
+        this.outputBuffer = undefined;
+        return bytes;
+    }
+    addFrame(image, duration) {
+        if (this.outputBuffer === undefined) {
+            this.outputBuffer = new OutputBuffer();
+            this.lastColorMap = new NeuralQuantizer(image, 256, this.samplingFactor);
+            this.lastImage = DitherPixel.getDitherPixels(image, this.lastColorMap, this.dither, this.ditherSerpentine);
+            this.lastImageDuration = duration;
+            this.width = image.width;
+            this.height = image.height;
+            return;
+        }
+        if (this.encodedFrames === 0) {
+            this.writeHeader(this.width, this.height);
+            this.writeApplicationExt();
+        }
+        this.writeGraphicsCtrlExt();
+        this.addImage(this.lastImage, this.width, this.height, this.lastColorMap.colorMap8, 256);
+        this.encodedFrames++;
+        this.lastColorMap = new NeuralQuantizer(image, 256, this.samplingFactor);
+        this.lastImage = DitherPixel.getDitherPixels(image, this.lastColorMap, this.dither, this.ditherSerpentine);
+        this.lastImageDuration = duration;
+    }
+    encodeImage(image) {
+        this.addFrame(image);
+        return this.finish();
+    }
+    encodeAnimation(animation) {
+        this.repeat = animation.loopCount;
+        for (const f of animation) {
+            this.addFrame(f, Math.floor(f.duration / 10));
+        }
+        return this.finish();
+    }
+}
+GifEncoder.gif89Id = 'GIF89a';
+GifEncoder.imageDescRecordType = 0x2c;
+GifEncoder.extensionRecordType = 0x21;
+GifEncoder.terminateRecordType = 0x3b;
+GifEncoder.applicationExt = 0xff;
+GifEncoder.graphicControlExt = 0xf9;
+GifEncoder.eof = -1;
+GifEncoder.bits = 12;
+GifEncoder.hsize = 5003;
+GifEncoder.masks = [
+    0x0000, 0x0001, 0x0003, 0x0007, 0x000f, 0x001f, 0x003f, 0x007f, 0x00ff,
+    0x01ff, 0x03ff, 0x07ff, 0x0fff, 0x1fff, 0x3fff, 0x7fff, 0xffff,
+];
+//# sourceMappingURL=gif-encoder.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/formats/dib-decoder.js
+
+class DibDecoder extends BmpDecoder {
+    constructor(input, info) {
+        super();
+        this.input = input;
+        this.info = info;
+    }
+}
+//# sourceMappingURL=dib-decoder.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/formats/ico/ico-bmp-info.js
+
+class IcoBmpInfo extends BmpInfo {
+    get height() {
+        return Math.floor(this._height / 2);
+    }
+    get ignoreAlphaChannel() {
+        return this.headerSize === 40 && this.bpp === 32
+            ? false
+            : super.ignoreAlphaChannel;
+    }
+}
+//# sourceMappingURL=ico-bmp-info.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/formats/ico/ico-info-image.js
+class IcoInfoImage {
+    constructor(width, height, colorPalette, bytesSize, bytesOffset, colorPlanes, bitsPerPixel) {
+        this._width = width;
+        this._height = height;
+        this._colorPalette = colorPalette;
+        this._bytesSize = bytesSize;
+        this._bytesOffset = bytesOffset;
+        this._colorPlanes = colorPlanes;
+        this._bitsPerPixel = bitsPerPixel;
+    }
+    get width() {
+        return this._width;
+    }
+    get height() {
+        return this._height;
+    }
+    get colorPalette() {
+        return this._colorPalette;
+    }
+    get bytesSize() {
+        return this._bytesSize;
+    }
+    get bytesOffset() {
+        return this._bytesOffset;
+    }
+    get colorPlanes() {
+        return this._colorPlanes;
+    }
+    get bitsPerPixel() {
+        return this._bitsPerPixel;
+    }
+}
+//# sourceMappingURL=ico-info-image.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/formats/ico/ico-info.js
+
+const TYPE_ICO = 1;
+const TYPE_CUR = 2;
+class IcoInfo {
+    constructor(numFrames, type, images) {
+        this._width = 0;
+        this._height = 0;
+        this._backgroundColor = 0xffffffff;
+        this._numFrames = numFrames;
+        this._type = type;
+        this._images = images;
+    }
+    get type() {
+        return this._type;
+    }
+    get images() {
+        return this._images;
+    }
+    get numFrames() {
+        return this._numFrames;
+    }
+    get width() {
+        return this._width;
+    }
+    get height() {
+        return this._height;
+    }
+    get backgroundColor() {
+        return this._backgroundColor;
+    }
+    static read(input) {
+        if (input.readUint16() !== 0) {
+            return undefined;
+        }
+        const type = input.readUint16();
+        if (![TYPE_ICO, TYPE_CUR].includes(type)) {
+            return undefined;
+        }
+        if (type === TYPE_CUR) {
+            return undefined;
+        }
+        const imageCount = input.readUint16();
+        const images = [];
+        for (let i = 0; i < imageCount; i++) {
+            const width = input.readByte();
+            const height = input.readByte();
+            const colorPalette = input.readByte();
+            input.skip(1);
+            const colorPlanes = input.readUint16();
+            const bitsPerPixel = input.readUint16();
+            const bytesSize = input.readUint32();
+            const bytesOffset = input.readUint32();
+            const image = new IcoInfoImage(width, height, colorPalette, bytesSize, bytesOffset, colorPlanes, bitsPerPixel);
+            images.push(image);
+        }
+        return new IcoInfo(imageCount, type, images);
+    }
+}
+//# sourceMappingURL=ico-info.js.map
+// EXTERNAL MODULE: ./node_modules/uzip/UZIP.js
+var UZIP = __webpack_require__(322);
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/common/crc32.js
+class Crc32 {
+    static makeTable() {
+        const table = [];
+        let c = 0;
+        for (let n = 0; n < 256; n++) {
+            c = n;
+            for (let k = 0; k < 8; k++) {
+                c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+            }
+            table[n] = c;
+        }
+        return table;
+    }
+    static getChecksum(options) {
+        var _a, _b, _c;
+        const t = Crc32.crcTable;
+        const len = (_a = options.length) !== null && _a !== void 0 ? _a : options.buffer.length;
+        const pos = (_b = options.position) !== null && _b !== void 0 ? _b : 0;
+        const end = pos + len;
+        let result = ((_c = options.baseCrc) !== null && _c !== void 0 ? _c : 0) ^ -1;
+        for (let i = pos; i < end; i++) {
+            result = (result >>> 8) ^ t[(result ^ options.buffer[i]) & 0xff];
+        }
+        return (result ^ -1) >>> 0;
+    }
+}
+Crc32.crcTable = new Uint32Array(Crc32.makeTable());
+//# sourceMappingURL=crc32.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/common/iccp-compression-mode.js
+var ICCPCompressionMode;
+(function (ICCPCompressionMode) {
+    ICCPCompressionMode[ICCPCompressionMode["none"] = 0] = "none";
+    ICCPCompressionMode[ICCPCompressionMode["deflate"] = 1] = "deflate";
+})(ICCPCompressionMode || (ICCPCompressionMode = {}));
+//# sourceMappingURL=iccp-compression-mode.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/common/icc-profile-data.js
+
+
+
+class ICCProfileData {
+    constructor(name, compression, data) {
+        this._name = name;
+        this._compression = compression;
+        this._data = data;
+    }
+    get name() {
+        return this._name;
+    }
+    get compression() {
+        return this._compression;
+    }
+    get data() {
+        return this._data;
+    }
+    static from(other) {
+        return new ICCProfileData(other._name, other._compression, ArrayUtils.copyUint8(other._data));
+    }
+    compressed() {
+        if (this._compression === ICCPCompressionMode.deflate) {
+            return this._data;
+        }
+        this._data = (0,UZIP.deflate)(this._data);
+        this._compression = ICCPCompressionMode.deflate;
+        return this._data;
+    }
+    decompressed() {
+        if (this._compression === ICCPCompressionMode.deflate) {
+            return this._data;
+        }
+        this._data = (0,UZIP.inflate)(this._data);
+        this._compression = ICCPCompressionMode.none;
+        return this._data;
+    }
+}
+//# sourceMappingURL=icc-profile-data.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/formats/png/png-frame.js
+class PngFrame {
+    constructor(options) {
+        this._fdat = [];
+        this._sequenceNumber = options === null || options === void 0 ? void 0 : options.sequenceNumber;
+        this._width = options === null || options === void 0 ? void 0 : options.width;
+        this._height = options === null || options === void 0 ? void 0 : options.height;
+        this._xOffset = options === null || options === void 0 ? void 0 : options.xOffset;
+        this._yOffset = options === null || options === void 0 ? void 0 : options.yOffset;
+        this._delayNum = options === null || options === void 0 ? void 0 : options.delayNum;
+        this._delayDen = options === null || options === void 0 ? void 0 : options.delayDen;
+        this._dispose = options === null || options === void 0 ? void 0 : options.dispose;
+        this._blend = options === null || options === void 0 ? void 0 : options.blend;
+    }
+    get fdat() {
+        return this._fdat;
+    }
+    get sequenceNumber() {
+        return this._sequenceNumber;
+    }
+    get width() {
+        return this._width;
+    }
+    get height() {
+        return this._height;
+    }
+    get xOffset() {
+        return this._xOffset;
+    }
+    get yOffset() {
+        return this._yOffset;
+    }
+    get delayNum() {
+        return this._delayNum;
+    }
+    get delayDen() {
+        return this._delayDen;
+    }
+    get dispose() {
+        return this._dispose;
+    }
+    get blend() {
+        return this._blend;
+    }
+    get delay() {
+        if (this._delayNum === undefined || this._delayDen === undefined) {
+            return 0;
+        }
+        if (this._delayDen === 0) {
+            return 0;
+        }
+        return this._delayNum / this._delayDen;
+    }
+}
+PngFrame.APNG_DISPOSE_OP_NONE = 0;
+PngFrame.APNG_DISPOSE_OP_BACKGROUND = 1;
+PngFrame.APNG_DISPOSE_OP_PREVIOUS = 2;
+PngFrame.APNG_BLEND_OP_SOURCE = 0;
+PngFrame.APNG_BLEND_OP_OVER = 1;
+//# sourceMappingURL=png-frame.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/formats/png/png-info.js
+class PngInfo {
+    constructor(options) {
+        var _a, _b;
+        this._width = 0;
+        this._height = 0;
+        this._backgroundColor = 0x00ffffff;
+        this._numFrames = 1;
+        this._iCCPName = '';
+        this._iCCPCompression = 0;
+        this._textData = new Map();
+        this._repeat = 0;
+        this._idat = [];
+        this._frames = [];
+        this._width = (_a = options === null || options === void 0 ? void 0 : options.width) !== null && _a !== void 0 ? _a : 0;
+        this._height = (_b = options === null || options === void 0 ? void 0 : options.height) !== null && _b !== void 0 ? _b : 0;
+        this._bits = options === null || options === void 0 ? void 0 : options.bits;
+        this._colorType = options === null || options === void 0 ? void 0 : options.colorType;
+        this._compressionMethod = options === null || options === void 0 ? void 0 : options.compressionMethod;
+        this._filterMethod = options === null || options === void 0 ? void 0 : options.filterMethod;
+        this._interlaceMethod = options === null || options === void 0 ? void 0 : options.interlaceMethod;
+    }
+    set width(v) {
+        this._width = v;
+    }
+    get width() {
+        return this._width;
+    }
+    set height(v) {
+        this._height = v;
+    }
+    get height() {
+        return this._height;
+    }
+    set backgroundColor(v) {
+        this._backgroundColor = v;
+    }
+    get backgroundColor() {
+        return this._backgroundColor;
+    }
+    set numFrames(v) {
+        this._numFrames = v;
+    }
+    get numFrames() {
+        return this._numFrames;
+    }
+    get bits() {
+        return this._bits;
+    }
+    get colorType() {
+        return this._colorType;
+    }
+    get compressionMethod() {
+        return this._compressionMethod;
+    }
+    get filterMethod() {
+        return this._filterMethod;
+    }
+    get interlaceMethod() {
+        return this._interlaceMethod;
+    }
+    set palette(v) {
+        this._palette = v;
+    }
+    get palette() {
+        return this._palette;
+    }
+    set transparency(v) {
+        this._transparency = v;
+    }
+    get transparency() {
+        return this._transparency;
+    }
+    set colorLut(v) {
+        this._colorLut = v;
+    }
+    get colorLut() {
+        return this._colorLut;
+    }
+    set gamma(v) {
+        this._gamma = v;
+    }
+    get gamma() {
+        return this._gamma;
+    }
+    set iCCPName(v) {
+        this._iCCPName = v;
+    }
+    get iCCPName() {
+        return this._iCCPName;
+    }
+    set iCCPCompression(v) {
+        this._iCCPCompression = v;
+    }
+    get iCCPCompression() {
+        return this._iCCPCompression;
+    }
+    set iCCPData(v) {
+        this._iCCPData = v;
+    }
+    get iCCPData() {
+        return this._iCCPData;
+    }
+    get textData() {
+        return this._textData;
+    }
+    set repeat(v) {
+        this._repeat = v;
+    }
+    get repeat() {
+        return this._repeat;
+    }
+    get idat() {
+        return this._idat;
+    }
+    get frames() {
+        return this._frames;
+    }
+    get isAnimated() {
+        return this._frames.length > 0;
+    }
+}
+//# sourceMappingURL=png-info.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/formats/png-decoder.js
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+class PngDecoder {
+    constructor() {
+        this._progressY = 0;
+        this._bitBuffer = 0;
+        this._bitBufferLen = 0;
+    }
+    get info() {
+        return this._info;
+    }
+    get input() {
+        return this._input;
+    }
+    get progressY() {
+        return this._progressY;
+    }
+    get bitBuffer() {
+        return this._bitBuffer;
+    }
+    get bitBufferLen() {
+        return this._bitBufferLen;
+    }
+    get numFrames() {
+        return this._info !== undefined ? this._info.numFrames : 0;
+    }
+    static unfilter(filterType, bpp, row, prevRow) {
+        const rowBytes = row.length;
+        switch (filterType) {
+            case PngDecoder.FILTER_NONE:
+                break;
+            case PngDecoder.FILTER_SUB:
+                for (let x = bpp; x < rowBytes; ++x) {
+                    row[x] = (row[x] + row[x - bpp]) & 0xff;
+                }
+                break;
+            case PngDecoder.FILTER_UP:
+                for (let x = 0; x < rowBytes; ++x) {
+                    row[x] = (row[x] + prevRow[x]) & 0xff;
+                }
+                break;
+            case PngDecoder.FILTER_AVERAGE:
+                for (let x = 0; x < rowBytes; ++x) {
+                    const a = x < bpp ? 0 : row[x - bpp];
+                    const b = prevRow[x];
+                    row[x] = (row[x] + ((a + b) >> 1)) & 0xff;
+                }
+                break;
+            case PngDecoder.FILTER_PAETH:
+                for (let x = 0; x < rowBytes; ++x) {
+                    const a = x < bpp ? 0 : row[x - bpp];
+                    const b = prevRow[x];
+                    const c = x < bpp ? 0 : prevRow[x - bpp];
+                    const p = a + b - c;
+                    const pa = Math.abs(p - a);
+                    const pb = Math.abs(p - b);
+                    const pc = Math.abs(p - c);
+                    let paeth = 0;
+                    if (pa <= pb && pa <= pc) {
+                        paeth = a;
+                    }
+                    else if (pb <= pc) {
+                        paeth = b;
+                    }
+                    else {
+                        paeth = c;
+                    }
+                    row[x] = (row[x] + paeth) & 0xff;
+                }
+                break;
+            default:
+                throw new ImageError(`Invalid filter value: ${filterType}`);
+        }
+    }
+    static convert16to8(c) {
+        return c >> 8;
+    }
+    static convert1to8(c) {
+        return c === 0 ? 0 : 255;
+    }
+    static convert2to8(c) {
+        return c * 85;
+    }
+    static convert4to8(c) {
+        return c << 4;
+    }
+    static crc(type, bytes) {
+        const typeCodeUnits = TextCodec.getCodePoints(type);
+        const crc = Crc32.getChecksum({
+            buffer: typeCodeUnits,
+        });
+        return Crc32.getChecksum({
+            buffer: bytes,
+            baseCrc: crc,
+        });
+    }
+    processPass(input, image, xOffset, yOffset, xStep, yStep, passWidth, passHeight) {
+        let channels = 1;
+        if (this._info.colorType === PngDecoder.GRAYSCALE_ALPHA) {
+            channels = 2;
+        }
+        else if (this._info.colorType === PngDecoder.RGB) {
+            channels = 3;
+        }
+        else if (this._info.colorType === PngDecoder.RGBA) {
+            channels = 4;
+        }
+        const pixelDepth = channels * this._info.bits;
+        const bpp = (pixelDepth + 7) >> 3;
+        const rowBytes = (pixelDepth * passWidth + 7) >> 3;
+        const line = new Uint8Array(rowBytes);
+        const inData = [line, line];
+        const pixel = [0, 0, 0, 0];
+        for (let srcY = 0, dstY = yOffset, ri = 0; srcY < passHeight; ++srcY, dstY += yStep, ri = 1 - ri, this._progressY++) {
+            const filterType = input.readByte();
+            inData[ri] = input.readBytes(rowBytes).toUint8Array();
+            const row = inData[ri];
+            const prevRow = inData[1 - ri];
+            PngDecoder.unfilter(filterType, bpp, row, prevRow);
+            this.resetBits();
+            const rowInput = new InputBuffer({
+                buffer: row,
+                bigEndian: true,
+            });
+            const blockHeight = xStep;
+            const blockWidth = xStep - xOffset;
+            for (let srcX = 0, dstX = xOffset; srcX < passWidth; ++srcX, dstX += xStep) {
+                this.readPixel(rowInput, pixel);
+                const c = this.getColor(pixel);
+                image.setPixel(dstX, dstY, c);
+                if (blockWidth > 1 || blockHeight > 1) {
+                    for (let i = 0; i < blockHeight; ++i) {
+                        for (let j = 0; j < blockWidth; ++j) {
+                            image.setPixelSafe(dstX + j, dstY + j, c);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    process(input, image) {
+        let channels = 1;
+        if (this._info.colorType === PngDecoder.GRAYSCALE_ALPHA) {
+            channels = 2;
+        }
+        else if (this._info.colorType === PngDecoder.RGB) {
+            channels = 3;
+        }
+        else if (this._info.colorType === PngDecoder.RGBA) {
+            channels = 4;
+        }
+        const pixelDepth = channels * this._info.bits;
+        const w = this._info.width;
+        const h = this._info.height;
+        const rowBytes = (w * pixelDepth + 7) >> 3;
+        const bpp = (pixelDepth + 7) >> 3;
+        const line = new Uint8Array(rowBytes);
+        const inData = [line, line];
+        const pixel = [0, 0, 0, 0];
+        for (let y = 0, pi = 0, ri = 0; y < h; ++y, ri = 1 - ri) {
+            const filterType = input.readByte();
+            inData[ri] = input.readBytes(rowBytes).toUint8Array();
+            const row = inData[ri];
+            const prevRow = inData[1 - ri];
+            PngDecoder.unfilter(filterType, bpp, row, prevRow);
+            this.resetBits();
+            const rowInput = new InputBuffer({
+                buffer: inData[ri],
+                bigEndian: true,
+            });
+            for (let x = 0; x < w; ++x) {
+                this.readPixel(rowInput, pixel);
+                image.setPixelByIndex(pi++, this.getColor(pixel));
+            }
+        }
+    }
+    resetBits() {
+        this._bitBuffer = 0;
+        this._bitBufferLen = 0;
+    }
+    readBits(input, numBits) {
+        if (numBits === 0) {
+            return 0;
+        }
+        if (numBits === 8) {
+            return input.readByte();
+        }
+        if (numBits === 16) {
+            return input.readUint16();
+        }
+        while (this._bitBufferLen < numBits) {
+            if (input.isEOS) {
+                throw new ImageError('Invalid PNG data.');
+            }
+            const octet = input.readByte();
+            this._bitBuffer = octet << this._bitBufferLen;
+            this._bitBufferLen += 8;
+        }
+        let mask = 0;
+        switch (numBits) {
+            case 1:
+                mask = 1;
+                break;
+            case 2:
+                mask = 3;
+                break;
+            case 4:
+                mask = 0xf;
+                break;
+            case 8:
+                mask = 0xff;
+                break;
+            case 16:
+                mask = 0xffff;
+                break;
+            default:
+                mask = 0;
+                break;
+        }
+        const octet = (this._bitBuffer >> (this._bitBufferLen - numBits)) & mask;
+        this._bitBufferLen -= numBits;
+        return octet;
+    }
+    readPixel(input, pixel) {
+        switch (this._info.colorType) {
+            case PngDecoder.GRAYSCALE:
+                pixel[0] = this.readBits(input, this._info.bits);
+                return;
+            case PngDecoder.RGB:
+                pixel[0] = this.readBits(input, this._info.bits);
+                pixel[1] = this.readBits(input, this._info.bits);
+                pixel[2] = this.readBits(input, this._info.bits);
+                return;
+            case PngDecoder.INDEXED:
+                pixel[0] = this.readBits(input, this._info.bits);
+                return;
+            case PngDecoder.GRAYSCALE_ALPHA:
+                pixel[0] = this.readBits(input, this._info.bits);
+                pixel[1] = this.readBits(input, this._info.bits);
+                return;
+            case PngDecoder.RGBA:
+                pixel[0] = this.readBits(input, this._info.bits);
+                pixel[1] = this.readBits(input, this._info.bits);
+                pixel[2] = this.readBits(input, this._info.bits);
+                pixel[3] = this.readBits(input, this._info.bits);
+                return;
+        }
+        throw new NotImplementedError(`Invalid color type: ${this._info.colorType}.`);
+    }
+    getColor(raw) {
+        switch (this._info.colorType) {
+            case PngDecoder.GRAYSCALE: {
+                let g = 0;
+                switch (this._info.bits) {
+                    case 1:
+                        g = PngDecoder.convert1to8(raw[0]);
+                        break;
+                    case 2:
+                        g = PngDecoder.convert2to8(raw[0]);
+                        break;
+                    case 4:
+                        g = PngDecoder.convert4to8(raw[0]);
+                        break;
+                    case 8:
+                        g = raw[0];
+                        break;
+                    case 16:
+                        g = PngDecoder.convert16to8(raw[0]);
+                        break;
+                }
+                g = this._info.colorLut[g];
+                if (this._info.transparency !== undefined) {
+                    const a = ((this._info.transparency[0] & 0xff) << 24) |
+                        (this._info.transparency[1] & 0xff);
+                    if (raw[0] === a) {
+                        return color_Color.getColor(g, g, g, 0);
+                    }
+                }
+                return color_Color.getColor(g, g, g);
+            }
+            case PngDecoder.RGB: {
+                let r = 0;
+                let g = 0;
+                let b = 0;
+                switch (this._info.bits) {
+                    case 1:
+                        r = PngDecoder.convert1to8(raw[0]);
+                        g = PngDecoder.convert1to8(raw[1]);
+                        b = PngDecoder.convert1to8(raw[2]);
+                        break;
+                    case 2:
+                        r = PngDecoder.convert2to8(raw[0]);
+                        g = PngDecoder.convert2to8(raw[1]);
+                        b = PngDecoder.convert2to8(raw[2]);
+                        break;
+                    case 4:
+                        r = PngDecoder.convert4to8(raw[0]);
+                        g = PngDecoder.convert4to8(raw[1]);
+                        b = PngDecoder.convert4to8(raw[2]);
+                        break;
+                    case 8:
+                        r = raw[0];
+                        g = raw[1];
+                        b = raw[2];
+                        break;
+                    case 16:
+                        r = PngDecoder.convert16to8(raw[0]);
+                        g = PngDecoder.convert16to8(raw[1]);
+                        b = PngDecoder.convert16to8(raw[2]);
+                        break;
+                }
+                r = this._info.colorLut[r];
+                g = this._info.colorLut[g];
+                b = this._info.colorLut[b];
+                if (this._info.transparency !== undefined) {
+                    const tr = ((this._info.transparency[0] & 0xff) << 8) |
+                        (this._info.transparency[1] & 0xff);
+                    const tg = ((this._info.transparency[2] & 0xff) << 8) |
+                        (this._info.transparency[3] & 0xff);
+                    const tb = ((this._info.transparency[4] & 0xff) << 8) |
+                        (this._info.transparency[5] & 0xff);
+                    if (raw[0] === tr && raw[1] === tg && raw[2] === tb) {
+                        return color_Color.getColor(r, g, b, 0);
+                    }
+                }
+                return color_Color.getColor(r, g, b);
+            }
+            case PngDecoder.INDEXED: {
+                const p = raw[0] * 3;
+                const a = this._info.transparency !== undefined &&
+                    raw[0] < this._info.transparency.length
+                    ? this._info.transparency[raw[0]]
+                    : 255;
+                if (p >= this._info.palette.length) {
+                    return color_Color.getColor(255, 255, 255, a);
+                }
+                const r = this._info.palette[p];
+                const g = this._info.palette[p + 1];
+                const b = this._info.palette[p + 2];
+                return color_Color.getColor(r, g, b, a);
+            }
+            case PngDecoder.GRAYSCALE_ALPHA: {
+                let g = 0;
+                let a = 0;
+                switch (this._info.bits) {
+                    case 1:
+                        g = PngDecoder.convert1to8(raw[0]);
+                        a = PngDecoder.convert1to8(raw[1]);
+                        break;
+                    case 2:
+                        g = PngDecoder.convert2to8(raw[0]);
+                        a = PngDecoder.convert2to8(raw[1]);
+                        break;
+                    case 4:
+                        g = PngDecoder.convert4to8(raw[0]);
+                        a = PngDecoder.convert4to8(raw[1]);
+                        break;
+                    case 8:
+                        g = raw[0];
+                        a = raw[1];
+                        break;
+                    case 16:
+                        g = PngDecoder.convert16to8(raw[0]);
+                        a = PngDecoder.convert16to8(raw[1]);
+                        break;
+                }
+                g = this._info.colorLut[g];
+                return color_Color.getColor(g, g, g, a);
+            }
+            case PngDecoder.RGBA: {
+                let r = 0;
+                let g = 0;
+                let b = 0;
+                let a = 0;
+                switch (this._info.bits) {
+                    case 1:
+                        r = PngDecoder.convert1to8(raw[0]);
+                        g = PngDecoder.convert1to8(raw[1]);
+                        b = PngDecoder.convert1to8(raw[2]);
+                        a = PngDecoder.convert1to8(raw[3]);
+                        break;
+                    case 2:
+                        r = PngDecoder.convert2to8(raw[0]);
+                        g = PngDecoder.convert2to8(raw[1]);
+                        b = PngDecoder.convert2to8(raw[2]);
+                        a = PngDecoder.convert2to8(raw[3]);
+                        break;
+                    case 4:
+                        r = PngDecoder.convert4to8(raw[0]);
+                        g = PngDecoder.convert4to8(raw[1]);
+                        b = PngDecoder.convert4to8(raw[2]);
+                        a = PngDecoder.convert4to8(raw[3]);
+                        break;
+                    case 8:
+                        r = raw[0];
+                        g = raw[1];
+                        b = raw[2];
+                        a = raw[3];
+                        break;
+                    case 16:
+                        r = PngDecoder.convert16to8(raw[0]);
+                        g = PngDecoder.convert16to8(raw[1]);
+                        b = PngDecoder.convert16to8(raw[2]);
+                        a = PngDecoder.convert16to8(raw[3]);
+                        break;
+                }
+                r = this._info.colorLut[r];
+                g = this._info.colorLut[g];
+                b = this._info.colorLut[b];
+                return color_Color.getColor(r, g, b, a);
+            }
+        }
+        throw new ImageError(`Invalid color type: ${this._info.colorType}.`);
+    }
+    isValidFile(bytes) {
+        const input = new InputBuffer({
+            buffer: bytes,
+            bigEndian: true,
+        });
+        const pngHeader = input.readBytes(8);
+        const PNG_HEADER = [137, 80, 78, 71, 13, 10, 26, 10];
+        for (let i = 0; i < 8; ++i) {
+            if (pngHeader.getByte(i) !== PNG_HEADER[i]) {
+                return false;
+            }
+        }
+        return true;
+    }
+    startDecode(bytes) {
+        this._input = new InputBuffer({
+            buffer: bytes,
+            bigEndian: true,
+        });
+        const pngHeader = this._input.readBytes(8);
+        const expectedHeader = [137, 80, 78, 71, 13, 10, 26, 10];
+        for (let i = 0; i < 8; ++i) {
+            if (pngHeader.getByte(i) !== expectedHeader[i]) {
+                return undefined;
+            }
+        }
+        while (true) {
+            const inputPos = this._input.position;
+            let chunkSize = this._input.readUint32();
+            const chunkType = this._input.readString(4);
+            switch (chunkType) {
+                case 'tEXt': {
+                    if (this._info === undefined) {
+                        this._info = new PngInfo();
+                    }
+                    const txtData = this._input.readBytes(chunkSize).toUint8Array();
+                    for (let i = 0, l = txtData.length; i < l; ++i) {
+                        if (txtData[i] === 0) {
+                            const key = TextCodec.latin1Decoder.decode(ArrayUtils.copyUint8(txtData, 0, i));
+                            const text = TextCodec.latin1Decoder.decode(ArrayUtils.copyUint8(txtData, i + 1));
+                            this._info.textData.set(key, text);
+                            break;
+                        }
+                    }
+                    this._input.skip(4);
+                    break;
+                }
+                case 'IHDR': {
+                    const hdr = InputBuffer.from(this._input.readBytes(chunkSize));
+                    const hdrBytes = hdr.toUint8Array();
+                    const width = hdr.readUint32();
+                    const height = hdr.readUint32();
+                    const bits = hdr.readByte();
+                    const colorType = hdr.readByte();
+                    const compressionMethod = hdr.readByte();
+                    const filterMethod = hdr.readByte();
+                    const interlaceMethod = hdr.readByte();
+                    this._info = new PngInfo({
+                        width: width,
+                        height: height,
+                        bits: bits,
+                        colorType: colorType,
+                        compressionMethod: compressionMethod,
+                        filterMethod: filterMethod,
+                        interlaceMethod: interlaceMethod,
+                    });
+                    if (![
+                        PngDecoder.GRAYSCALE,
+                        PngDecoder.RGB,
+                        PngDecoder.INDEXED,
+                        PngDecoder.GRAYSCALE_ALPHA,
+                        PngDecoder.RGBA,
+                    ].includes(this._info.colorType)) {
+                        return undefined;
+                    }
+                    if (this._info.filterMethod !== 0) {
+                        return undefined;
+                    }
+                    switch (this._info.colorType) {
+                        case PngDecoder.GRAYSCALE:
+                            if (![1, 2, 4, 8, 16].includes(this._info.bits)) {
+                                return undefined;
+                            }
+                            break;
+                        case PngDecoder.RGB:
+                            if (![8, 16].includes(this._info.bits)) {
+                                return undefined;
+                            }
+                            break;
+                        case PngDecoder.INDEXED:
+                            if (![1, 2, 4, 8].includes(this._info.bits)) {
+                                return undefined;
+                            }
+                            break;
+                        case PngDecoder.GRAYSCALE_ALPHA:
+                            if (![8, 16].includes(this._info.bits)) {
+                                return undefined;
+                            }
+                            break;
+                        case PngDecoder.RGBA:
+                            if (![8, 16].includes(this._info.bits)) {
+                                return undefined;
+                            }
+                            break;
+                    }
+                    const crc = this._input.readUint32();
+                    const computedCrc = PngDecoder.crc(chunkType, hdrBytes);
+                    if (crc !== computedCrc) {
+                        throw new ImageError(`Invalid ${chunkType} checksum`);
+                    }
+                    break;
+                }
+                case 'PLTE': {
+                    this._info.palette = this._input.readBytes(chunkSize).toUint8Array();
+                    const crc = this._input.readUint32();
+                    const computedCrc = PngDecoder.crc(chunkType, this._info.palette);
+                    if (crc !== computedCrc) {
+                        throw new ImageError(`Invalid ${chunkType} checksum`);
+                    }
+                    break;
+                }
+                case 'tRNS': {
+                    this._info.transparency = this._input
+                        .readBytes(chunkSize)
+                        .toUint8Array();
+                    const crc = this._input.readUint32();
+                    const computedCrc = PngDecoder.crc(chunkType, this._info.transparency);
+                    if (crc !== computedCrc) {
+                        throw new ImageError(`Invalid ${chunkType} checksum`);
+                    }
+                    break;
+                }
+                case 'IEND': {
+                    this._input.skip(4);
+                    break;
+                }
+                case 'gAMA': {
+                    if (chunkSize !== 4) {
+                        throw new ImageError('Invalid gAMA chunk');
+                    }
+                    const gammaInt = this._input.readUint32();
+                    this._input.skip(4);
+                    if (gammaInt !== 100000) {
+                        this._info.gamma = gammaInt / 100000.0;
+                    }
+                    break;
+                }
+                case 'IDAT': {
+                    this._info.idat.push(inputPos);
+                    this._input.skip(chunkSize);
+                    this._input.skip(4);
+                    break;
+                }
+                case 'acTL': {
+                    this._info.numFrames = this._input.readUint32();
+                    this._info.repeat = this._input.readUint32();
+                    this._input.skip(4);
+                    break;
+                }
+                case 'fcTL': {
+                    const sequenceNumber = this._input.readUint32();
+                    const width = this._input.readUint32();
+                    const height = this._input.readUint32();
+                    const xOffset = this._input.readUint32();
+                    const yOffset = this._input.readUint32();
+                    const delayNum = this._input.readUint16();
+                    const delayDen = this._input.readUint16();
+                    const dispose = this._input.readByte();
+                    const blend = this._input.readByte();
+                    this._input.skip(4);
+                    const frame = new PngFrame({
+                        sequenceNumber: sequenceNumber,
+                        width: width,
+                        height: height,
+                        xOffset: xOffset,
+                        yOffset: yOffset,
+                        delayNum: delayNum,
+                        delayDen: delayDen,
+                        dispose: dispose,
+                        blend: blend,
+                    });
+                    this._info.frames.push(frame);
+                    break;
+                }
+                case 'fdAT': {
+                    const sequenceNumber = this._input.readUint32();
+                    const frame = this._info.frames[this._info.frames.length - 1];
+                    frame.fdat.push(inputPos);
+                    this._input.skip(chunkSize - 4);
+                    this._input.skip(4);
+                    break;
+                }
+                case 'bKGD': {
+                    if (this._info.colorType === 3) {
+                        const paletteIndex = this._input.readByte();
+                        chunkSize--;
+                        const p3 = paletteIndex * 3;
+                        const r = this._info.palette[p3];
+                        const g = this._info.palette[p3 + 1];
+                        const b = this._info.palette[p3 + 2];
+                        this._info.backgroundColor = color_Color.fromRgb(r, g, b);
+                    }
+                    else if (this._info.colorType === 0 ||
+                        this._info.colorType === 4) {
+                        this._input.readUint16();
+                        chunkSize -= 2;
+                    }
+                    else if (this._info.colorType === 2 ||
+                        this._info.colorType === 6) {
+                        this._input.readUint16();
+                        this._input.readUint16();
+                        this._input.readUint16();
+                        chunkSize -= 24;
+                    }
+                    if (chunkSize > 0) {
+                        this._input.skip(chunkSize);
+                    }
+                    this._input.skip(4);
+                    break;
+                }
+                case 'iCCP': {
+                    this._info.iCCPName = this._input.readString();
+                    this._info.iCCPCompression = this._input.readByte();
+                    chunkSize -= this._info.iCCPName.length + 2;
+                    const profile = this._input.readBytes(chunkSize);
+                    this._info.iCCPData = profile.toUint8Array();
+                    this._input.skip(4);
+                    break;
+                }
+                default: {
+                    this._input.skip(chunkSize);
+                    this._input.skip(4);
+                    break;
+                }
+            }
+            if (chunkType === 'IEND') {
+                break;
+            }
+            if (this._input.isEOS) {
+                return undefined;
+            }
+        }
+        return this._info;
+    }
+    decodeFrame(frame) {
+        if (this._input === undefined || this._info === undefined) {
+            return undefined;
+        }
+        let imageData = undefined;
+        let width = this._info.width;
+        let height = this._info.height;
+        if (!this._info.isAnimated || frame === 0) {
+            let totalSize = 0;
+            const dataBlocks = new Array();
+            for (let i = 0, len = this._info.idat.length; i < len; ++i) {
+                this._input.offset = this._info.idat[i];
+                const chunkSize = this._input.readUint32();
+                const chunkType = this._input.readString(4);
+                const data = this._input.readBytes(chunkSize).toUint8Array();
+                totalSize += data.length;
+                dataBlocks.push(data);
+                const crc = this._input.readUint32();
+                const computedCrc = PngDecoder.crc(chunkType, data);
+                if (crc !== computedCrc) {
+                    throw new ImageError(`Invalid ${chunkType} checksum`);
+                }
+            }
+            imageData = new Uint8Array(totalSize);
+            let offset = 0;
+            for (const data of dataBlocks) {
+                imageData.set(data, offset);
+                offset += data.length;
+            }
+        }
+        else {
+            if (frame < 0 || frame >= this._info.frames.length) {
+                throw new ImageError(`Invalid Frame Number: ${frame}`);
+            }
+            const f = this._info.frames[frame];
+            width = f.width;
+            height = f.height;
+            let totalSize = 0;
+            const dataBlocks = new Array();
+            for (let i = 0; i < f.fdat.length; ++i) {
+                this._input.offset = f.fdat[i];
+                const chunkSize = this._input.readUint32();
+                this._input.readString(4);
+                this._input.skip(4);
+                const data = this._input.readBytes(chunkSize - 4).toUint8Array();
+                totalSize += data.length;
+                dataBlocks.push(data);
+            }
+            imageData = new Uint8Array(totalSize);
+            let offset = 0;
+            for (const data of dataBlocks) {
+                imageData.set(data, offset);
+                offset += data.length;
+            }
+        }
+        const rgbChannelSet = this._info.colorType === PngDecoder.GRAYSCALE_ALPHA ||
+            this._info.colorType === PngDecoder.RGBA ||
+            this._info.transparency !== undefined
+            ? RgbChannelSet.rgba
+            : RgbChannelSet.rgb;
+        const image = new MemoryImage({
+            width: width,
+            height: height,
+            rgbChannelSet: rgbChannelSet,
+        });
+        let uncompressed = undefined;
+        try {
+            uncompressed = (0,UZIP.inflate)(imageData);
+        }
+        catch (error) {
+            console.error(error);
+            return undefined;
+        }
+        const input = new InputBuffer({
+            buffer: uncompressed,
+            bigEndian: true,
+        });
+        this.resetBits();
+        if (this._info.colorLut === undefined) {
+            this._info.colorLut = [];
+            for (let i = 0; i < 256; i++) {
+                const c = i;
+                this._info.colorLut.push(c);
+            }
+            if (this._info.palette !== undefined && this._info.gamma !== undefined) {
+                for (let i = 0; i < this._info.palette.length; ++i) {
+                    this._info.palette[i] = this._info.colorLut[this._info.palette[i]];
+                }
+            }
+        }
+        const origW = this._info.width;
+        const origH = this._info.height;
+        this._info.width = width;
+        this._info.height = height;
+        const w = width;
+        const h = height;
+        this._progressY = 0;
+        if (this._info.interlaceMethod !== 0) {
+            this.processPass(input, image, 0, 0, 8, 8, (w + 7) >> 3, (h + 7) >> 3);
+            this.processPass(input, image, 4, 0, 8, 8, (w + 3) >> 3, (h + 7) >> 3);
+            this.processPass(input, image, 0, 4, 4, 8, (w + 3) >> 2, (h + 3) >> 3);
+            this.processPass(input, image, 2, 0, 4, 4, (w + 1) >> 2, (h + 3) >> 2);
+            this.processPass(input, image, 0, 2, 2, 4, (w + 1) >> 1, (h + 1) >> 2);
+            this.processPass(input, image, 1, 0, 2, 2, w >> 1, (h + 1) >> 1);
+            this.processPass(input, image, 0, 1, 1, 2, w, h >> 1);
+        }
+        else {
+            this.process(input, image);
+        }
+        this._info.width = origW;
+        this._info.height = origH;
+        if (this._info.iCCPData !== undefined) {
+            image.iccProfile = new ICCProfileData(this._info.iCCPName, ICCPCompressionMode.deflate, this._info.iCCPData);
+        }
+        if (this._info.textData.size > 0) {
+            image.addTextData(this._info.textData);
+        }
+        return image;
+    }
+    decodeHdrFrame(frame) {
+        const img = this.decodeFrame(frame);
+        if (img === undefined) {
+            return undefined;
+        }
+        return HdrImage.fromImage(img);
+    }
+    decodeAnimation(bytes) {
+        if (this.startDecode(bytes) === undefined) {
+            return undefined;
+        }
+        const animation = new FrameAnimation({
+            width: this._info.width,
+            height: this._info.height,
+        });
+        if (!this._info.isAnimated) {
+            const image = this.decodeFrame(0);
+            animation.addFrame(image);
+            return animation;
+        }
+        let lastImage = undefined;
+        for (let i = 0; i < this._info.numFrames; ++i) {
+            const frame = this._info.frames[i];
+            const image = this.decodeFrame(i);
+            if (image === undefined) {
+                continue;
+            }
+            if (lastImage === undefined) {
+                lastImage = image;
+                lastImage.duration = Math.trunc(frame.delay * 1000);
+                animation.addFrame(lastImage);
+                continue;
+            }
+            if (image.width === lastImage.width &&
+                image.height === lastImage.height &&
+                frame.xOffset === 0 &&
+                frame.yOffset === 0 &&
+                frame.blend === PngFrame.APNG_BLEND_OP_SOURCE) {
+                lastImage = image;
+                lastImage.duration = Math.trunc(frame.delay * 1000);
+                animation.addFrame(lastImage);
+                continue;
+            }
+            const dispose = frame.dispose;
+            if (dispose === PngFrame.APNG_DISPOSE_OP_BACKGROUND) {
+                lastImage = new MemoryImage({
+                    width: lastImage.width,
+                    height: lastImage.height,
+                });
+                lastImage.fill(this._info.backgroundColor);
+            }
+            else if (dispose === PngFrame.APNG_DISPOSE_OP_PREVIOUS) {
+                lastImage = MemoryImage.from(lastImage);
+            }
+            else {
+                lastImage = MemoryImage.from(lastImage);
+            }
+            lastImage.duration = Math.trunc(frame.delay * 1000);
+            ImageTransform.copyInto({
+                dst: lastImage,
+                src: image,
+                dstX: frame.xOffset,
+                dstY: frame.yOffset,
+                blend: frame.blend === PngFrame.APNG_BLEND_OP_OVER,
+            });
+            animation.addFrame(lastImage);
+        }
+        return animation;
+    }
+    decodeImage(bytes, frame = 0) {
+        if (this.startDecode(bytes) === undefined) {
+            return undefined;
+        }
+        return this.decodeFrame(frame);
+    }
+    decodeHdrImage(bytes, frame = 0) {
+        const img = this.decodeImage(bytes, frame);
+        if (img === undefined) {
+            return undefined;
+        }
+        return HdrImage.fromImage(img);
+    }
+}
+PngDecoder.GRAYSCALE = 0;
+PngDecoder.RGB = 2;
+PngDecoder.INDEXED = 3;
+PngDecoder.GRAYSCALE_ALPHA = 4;
+PngDecoder.RGBA = 6;
+PngDecoder.FILTER_NONE = 0;
+PngDecoder.FILTER_SUB = 1;
+PngDecoder.FILTER_UP = 2;
+PngDecoder.FILTER_AVERAGE = 3;
+PngDecoder.FILTER_PAETH = 4;
+//# sourceMappingURL=png-decoder.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/formats/ico-decoder.js
+
+
+
+
+
+
+
+
+
+
+class IcoDecoder {
+    get numFrames() {
+        return this._icoInfo !== undefined ? this._icoInfo.numFrames : 0;
+    }
+    isValidFile(bytes) {
+        this._input = new InputBuffer({
+            buffer: bytes,
+        });
+        this._icoInfo = IcoInfo.read(this._input);
+        return this._icoInfo !== undefined;
+    }
+    startDecode(bytes) {
+        this._input = new InputBuffer({
+            buffer: bytes,
+        });
+        this._icoInfo = IcoInfo.read(this._input);
+        return this._icoInfo;
+    }
+    decodeFrame(frame) {
+        if (this._input === undefined ||
+            this._icoInfo === undefined ||
+            frame >= this._icoInfo.numFrames) {
+            return undefined;
+        }
+        const imageInfo = this._icoInfo.images[frame];
+        const imageBuffer = ArrayUtils.copyUint8(this._input.buffer, this._input.start + imageInfo.bytesOffset, this._input.start + imageInfo.bytesOffset + imageInfo.bytesSize);
+        const png = new PngDecoder();
+        if (png.isValidFile(imageBuffer)) {
+            return png.decodeImage(imageBuffer);
+        }
+        const dummyBmpHeader = new OutputBuffer({
+            size: 14,
+        });
+        dummyBmpHeader.writeUint16(BitmapFileHeader.BMP_HEADER_FILETYPE);
+        dummyBmpHeader.writeUint32(imageInfo.bytesSize);
+        dummyBmpHeader.writeUint32(0);
+        dummyBmpHeader.writeUint32(0);
+        const bmpInfo = new IcoBmpInfo(new InputBuffer({
+            buffer: imageBuffer,
+        }), new BitmapFileHeader(new InputBuffer({
+            buffer: dummyBmpHeader.getBytes(),
+        })));
+        if (bmpInfo.headerSize !== 40 && bmpInfo.planes !== 1) {
+            return undefined;
+        }
+        let offset = 0;
+        if (bmpInfo.totalColors === 0 && bmpInfo.bpp <= 8) {
+            offset = 40 + 4 * (1 << bmpInfo.bpp);
+        }
+        else {
+            offset = 40 + 4 * bmpInfo.totalColors;
+        }
+        bmpInfo.fileHeader.offset = offset;
+        dummyBmpHeader.length -= 4;
+        dummyBmpHeader.writeUint32(offset);
+        const inp = new InputBuffer({
+            buffer: imageBuffer,
+        });
+        const bmp = new DibDecoder(inp, bmpInfo);
+        const image = bmp.decodeFrame(0);
+        if (image === undefined) {
+            return undefined;
+        }
+        if (bmpInfo.bpp >= 32) {
+            return image;
+        }
+        const padding = 32 - (bmpInfo.width % 32);
+        const rowLength = Math.floor((padding === 32 ? bmpInfo.width : bmpInfo.width + padding) / 8);
+        for (let y = 0; y < bmpInfo.height; y++) {
+            const line = bmpInfo.readBottomUp ? y : image.height - 1 - y;
+            const row = inp.readBytes(rowLength);
+            for (let x = 0; x < bmpInfo.width;) {
+                const b = row.readByte();
+                for (let j = 7; j > -1 && x < bmpInfo.width; j--) {
+                    if ((b & (1 << j)) !== 0) {
+                        image.setPixelRgba(x, line, 0, 0, 0, 0);
+                    }
+                    x++;
+                }
+            }
+        }
+        return image;
+    }
+    decodeHdrFrame(frame) {
+        const img = this.decodeFrame(frame);
+        if (img === undefined) {
+            return undefined;
+        }
+        return HdrImage.fromImage(img);
+    }
+    decodeAnimation(_) {
+        throw new NotImplementedError();
+    }
+    decodeImage(bytes, frame = 0) {
+        const info = this.startDecode(bytes);
+        if (info === undefined) {
+            return undefined;
+        }
+        return this.decodeFrame(frame);
+    }
+    decodeHdrImage(bytes, frame = 0) {
+        const img = this.decodeImage(bytes, frame);
+        if (img === undefined) {
+            return undefined;
+        }
+        return HdrImage.fromImage(img);
+    }
+    decodeImageLargest(bytes) {
+        const info = this.startDecode(bytes);
+        if (info === undefined) {
+            return undefined;
+        }
+        let largestFrame = 0;
+        let largestSize = 0;
+        for (let i = 0; i < this._icoInfo.images.length; i++) {
+            const image = this._icoInfo.images[i];
+            const size = image.width * image.height;
+            if (size > largestSize) {
+                largestSize = size;
+                largestFrame = i;
+            }
+        }
+        return this.decodeFrame(largestFrame);
+    }
+}
+//# sourceMappingURL=ico-decoder.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/formats/png-encoder.js
+
+
+
+
+
+
+
+
+class PngEncoder {
+    constructor(options) {
+        var _a, _b;
+        this.repeat = 0;
+        this.xOffset = 0;
+        this.yOffset = 0;
+        this.disposeMethod = DisposeMode.none;
+        this.blendMethod = BlendMode.source;
+        this.width = 0;
+        this.height = 0;
+        this.frames = 0;
+        this.sequenceNumber = 0;
+        this.isAnimated = false;
+        this._supportsAnimation = true;
+        this.filter = (_a = options === null || options === void 0 ? void 0 : options.filter) !== null && _a !== void 0 ? _a : PngEncoder.FILTER_PAETH;
+        this.level = (_b = options === null || options === void 0 ? void 0 : options.level) !== null && _b !== void 0 ? _b : 6;
+    }
+    get supportsAnimation() {
+        return this._supportsAnimation;
+    }
+    static crc(type, bytes) {
+        const typeCodeUnits = TextCodec.getCodePoints(type);
+        const crc = Crc32.getChecksum({
+            buffer: typeCodeUnits,
+        });
+        return Crc32.getChecksum({
+            buffer: bytes,
+            baseCrc: crc,
+        });
+    }
+    static writeChunk(out, type, chunk) {
+        out.writeUint32(chunk.length);
+        const typeCodeUnits = TextCodec.getCodePoints(type);
+        out.writeBytes(typeCodeUnits);
+        out.writeBytes(chunk);
+        const crc = PngEncoder.crc(type, chunk);
+        out.writeUint32(crc);
+    }
+    static filterSub(image, oi, row, out) {
+        let oindex = oi;
+        out[oindex++] = PngEncoder.FILTER_SUB;
+        out[oindex++] = color_Color.getRed(image.getPixel(0, row));
+        out[oindex++] = color_Color.getGreen(image.getPixel(0, row));
+        out[oindex++] = color_Color.getBlue(image.getPixel(0, row));
+        if (image.rgbChannelSet === RgbChannelSet.rgba) {
+            out[oindex++] = color_Color.getAlpha(image.getPixel(0, row));
+        }
+        for (let x = 1; x < image.width; ++x) {
+            const ar = color_Color.getRed(image.getPixel(x - 1, row));
+            const ag = color_Color.getGreen(image.getPixel(x - 1, row));
+            const ab = color_Color.getBlue(image.getPixel(x - 1, row));
+            const r = color_Color.getRed(image.getPixel(x, row));
+            const g = color_Color.getGreen(image.getPixel(x, row));
+            const b = color_Color.getBlue(image.getPixel(x, row));
+            out[oindex++] = (r - ar) & 0xff;
+            out[oindex++] = (g - ag) & 0xff;
+            out[oindex++] = (b - ab) & 0xff;
+            if (image.rgbChannelSet === RgbChannelSet.rgba) {
+                const aa = color_Color.getAlpha(image.getPixel(x - 1, row));
+                const a = color_Color.getAlpha(image.getPixel(x, row));
+                out[oindex++] = (a - aa) & 0xff;
+            }
+        }
+        return oindex;
+    }
+    static filterUp(image, oi, row, out) {
+        let oindex = oi;
+        out[oindex++] = PngEncoder.FILTER_UP;
+        for (let x = 0; x < image.width; ++x) {
+            const br = row === 0 ? 0 : color_Color.getRed(image.getPixel(x, row - 1));
+            const bg = row === 0 ? 0 : color_Color.getGreen(image.getPixel(x, row - 1));
+            const bb = row === 0 ? 0 : color_Color.getBlue(image.getPixel(x, row - 1));
+            const xr = color_Color.getRed(image.getPixel(x, row));
+            const xg = color_Color.getGreen(image.getPixel(x, row));
+            const xb = color_Color.getBlue(image.getPixel(x, row));
+            out[oindex++] = (xr - br) & 0xff;
+            out[oindex++] = (xg - bg) & 0xff;
+            out[oindex++] = (xb - bb) & 0xff;
+            if (image.rgbChannelSet === RgbChannelSet.rgba) {
+                const ba = row === 0 ? 0 : color_Color.getAlpha(image.getPixel(x, row - 1));
+                const xa = color_Color.getAlpha(image.getPixel(x, row));
+                out[oindex++] = (xa - ba) & 0xff;
+            }
+        }
+        return oindex;
+    }
+    static filterAverage(image, oi, row, out) {
+        let oindex = oi;
+        out[oindex++] = PngEncoder.FILTER_AVERAGE;
+        for (let x = 0; x < image.width; ++x) {
+            const ar = x === 0 ? 0 : color_Color.getRed(image.getPixel(x - 1, row));
+            const ag = x === 0 ? 0 : color_Color.getGreen(image.getPixel(x - 1, row));
+            const ab = x === 0 ? 0 : color_Color.getBlue(image.getPixel(x - 1, row));
+            const br = row === 0 ? 0 : color_Color.getRed(image.getPixel(x, row - 1));
+            const bg = row === 0 ? 0 : color_Color.getGreen(image.getPixel(x, row - 1));
+            const bb = row === 0 ? 0 : color_Color.getBlue(image.getPixel(x, row - 1));
+            const xr = color_Color.getRed(image.getPixel(x, row));
+            const xg = color_Color.getGreen(image.getPixel(x, row));
+            const xb = color_Color.getBlue(image.getPixel(x, row));
+            out[oindex++] = (xr - ((ar + br) >> 1)) & 0xff;
+            out[oindex++] = (xg - ((ag + bg) >> 1)) & 0xff;
+            out[oindex++] = (xb - ((ab + bb) >> 1)) & 0xff;
+            if (image.rgbChannelSet === RgbChannelSet.rgba) {
+                const aa = x === 0 ? 0 : color_Color.getAlpha(image.getPixel(x - 1, row));
+                const ba = row === 0 ? 0 : color_Color.getAlpha(image.getPixel(x, row - 1));
+                const xa = color_Color.getAlpha(image.getPixel(x, row));
+                out[oindex++] = (xa - ((aa + ba) >> 1)) & 0xff;
+            }
+        }
+        return oindex;
+    }
+    static paethPredictor(a, b, c) {
+        const p = a + b - c;
+        const pa = p > a ? p - a : a - p;
+        const pb = p > b ? p - b : b - p;
+        const pc = p > c ? p - c : c - p;
+        if (pa <= pb && pa <= pc) {
+            return a;
+        }
+        else if (pb <= pc) {
+            return b;
+        }
+        return c;
+    }
+    static filterPaeth(image, oi, row, out) {
+        let oindex = oi;
+        out[oindex++] = PngEncoder.FILTER_PAETH;
+        for (let x = 0; x < image.width; ++x) {
+            const ar = x === 0 ? 0 : color_Color.getRed(image.getPixel(x - 1, row));
+            const ag = x === 0 ? 0 : color_Color.getGreen(image.getPixel(x - 1, row));
+            const ab = x === 0 ? 0 : color_Color.getBlue(image.getPixel(x - 1, row));
+            const br = row === 0 ? 0 : color_Color.getRed(image.getPixel(x, row - 1));
+            const bg = row === 0 ? 0 : color_Color.getGreen(image.getPixel(x, row - 1));
+            const bb = row === 0 ? 0 : color_Color.getBlue(image.getPixel(x, row - 1));
+            const cr = row === 0 || x === 0 ? 0 : color_Color.getRed(image.getPixel(x - 1, row - 1));
+            const cg = row === 0 || x === 0
+                ? 0
+                : color_Color.getGreen(image.getPixel(x - 1, row - 1));
+            const cb = row === 0 || x === 0
+                ? 0
+                : color_Color.getBlue(image.getPixel(x - 1, row - 1));
+            const xr = color_Color.getRed(image.getPixel(x, row));
+            const xg = color_Color.getGreen(image.getPixel(x, row));
+            const xb = color_Color.getBlue(image.getPixel(x, row));
+            const pr = PngEncoder.paethPredictor(ar, br, cr);
+            const pg = PngEncoder.paethPredictor(ag, bg, cg);
+            const pb = PngEncoder.paethPredictor(ab, bb, cb);
+            out[oindex++] = (xr - pr) & 0xff;
+            out[oindex++] = (xg - pg) & 0xff;
+            out[oindex++] = (xb - pb) & 0xff;
+            if (image.rgbChannelSet === RgbChannelSet.rgba) {
+                const aa = x === 0 ? 0 : color_Color.getAlpha(image.getPixel(x - 1, row));
+                const ba = row === 0 ? 0 : color_Color.getAlpha(image.getPixel(x, row - 1));
+                const ca = row === 0 || x === 0
+                    ? 0
+                    : color_Color.getAlpha(image.getPixel(x - 1, row - 1));
+                const xa = color_Color.getAlpha(image.getPixel(x, row));
+                const pa = PngEncoder.paethPredictor(aa, ba, ca);
+                out[oindex++] = (xa - pa) & 0xff;
+            }
+        }
+        return oindex;
+    }
+    static filterNone(image, oi, row, out) {
+        let oindex = oi;
+        out[oindex++] = PngEncoder.FILTER_NONE;
+        for (let x = 0; x < image.width; ++x) {
+            const c = image.getPixel(x, row);
+            out[oindex++] = color_Color.getRed(c);
+            out[oindex++] = color_Color.getGreen(c);
+            out[oindex++] = color_Color.getBlue(c);
+            if (image.rgbChannelSet === RgbChannelSet.rgba) {
+                out[oindex++] = color_Color.getAlpha(image.getPixel(x, row));
+            }
+        }
+        return oindex;
+    }
+    writeHeader(width, height) {
+        this.output.writeBytes(new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+        const chunk = new OutputBuffer({
+            bigEndian: true,
+        });
+        chunk.writeUint32(width);
+        chunk.writeUint32(height);
+        chunk.writeByte(8);
+        chunk.writeByte(this.rgbChannelSet === RgbChannelSet.rgb ? 2 : 6);
+        chunk.writeByte(0);
+        chunk.writeByte(0);
+        chunk.writeByte(0);
+        PngEncoder.writeChunk(this.output, 'IHDR', chunk.getBytes());
+    }
+    writeICCPChunk(_, iccp) {
+        if (iccp === undefined) {
+            return;
+        }
+        const chunk = new OutputBuffer({
+            bigEndian: true,
+        });
+        const nameCodeUnits = TextCodec.getCodePoints(iccp.name);
+        chunk.writeBytes(nameCodeUnits);
+        chunk.writeByte(0);
+        chunk.writeByte(0);
+        chunk.writeBytes(iccp.compressed());
+        PngEncoder.writeChunk(this.output, 'iCCP', chunk.getBytes());
+    }
+    writeAnimationControlChunk() {
+        const chunk = new OutputBuffer({
+            bigEndian: true,
+        });
+        chunk.writeUint32(this.frames);
+        chunk.writeUint32(this.repeat);
+        PngEncoder.writeChunk(this.output, 'acTL', chunk.getBytes());
+    }
+    applyFilter(image, out) {
+        let oi = 0;
+        for (let y = 0; y < image.height; ++y) {
+            switch (this.filter) {
+                case PngEncoder.FILTER_SUB:
+                    oi = PngEncoder.filterSub(image, oi, y, out);
+                    break;
+                case PngEncoder.FILTER_UP:
+                    oi = PngEncoder.filterUp(image, oi, y, out);
+                    break;
+                case PngEncoder.FILTER_AVERAGE:
+                    oi = PngEncoder.filterAverage(image, oi, y, out);
+                    break;
+                case PngEncoder.FILTER_PAETH:
+                    oi = PngEncoder.filterPaeth(image, oi, y, out);
+                    break;
+                case PngEncoder.FILTER_AGRESSIVE:
+                    oi = PngEncoder.filterPaeth(image, oi, y, out);
+                    break;
+                default:
+                    oi = PngEncoder.filterNone(image, oi, y, out);
+                    break;
+            }
+        }
+    }
+    writeFrameControlChunk() {
+        const chunk = new OutputBuffer({
+            bigEndian: true,
+        });
+        chunk.writeUint32(this.sequenceNumber);
+        chunk.writeUint32(this.width);
+        chunk.writeUint32(this.height);
+        chunk.writeUint32(this.xOffset);
+        chunk.writeUint32(this.yOffset);
+        chunk.writeUint16(this.delay);
+        chunk.writeUint16(1000);
+        chunk.writeByte(this.disposeMethod);
+        chunk.writeByte(this.blendMethod);
+        PngEncoder.writeChunk(this.output, 'fcTL', chunk.getBytes());
+    }
+    writeTextChunk(keyword, text) {
+        const chunk = new OutputBuffer({
+            bigEndian: true,
+        });
+        const keywordBytes = TextCodec.getCodePoints(keyword);
+        const textBytes = TextCodec.getCodePoints(text);
+        chunk.writeBytes(keywordBytes);
+        chunk.writeByte(0);
+        chunk.writeBytes(textBytes);
+        PngEncoder.writeChunk(this.output, 'tEXt', chunk.getBytes());
+    }
+    addFrame(image) {
+        this.xOffset = image.xOffset;
+        this.yOffset = image.xOffset;
+        this.delay = image.duration;
+        this.disposeMethod = image.disposeMethod;
+        this.blendMethod = image.blendMethod;
+        if (this.output === undefined) {
+            this.output = new OutputBuffer({
+                bigEndian: true,
+            });
+            this.rgbChannelSet = image.rgbChannelSet;
+            this.width = image.width;
+            this.height = image.height;
+            this.writeHeader(this.width, this.height);
+            this.writeICCPChunk(this.output, image.iccProfile);
+            if (this.isAnimated) {
+                this.writeAnimationControlChunk();
+            }
+        }
+        const filteredImage = new Uint8Array(image.width * image.height * image.numberOfChannels + image.height);
+        this.applyFilter(image, filteredImage);
+        const compressed = (0,UZIP.deflate)(filteredImage, {
+            level: this.level,
+        });
+        if (image.textData !== undefined) {
+            for (const [key, value] of image.textData) {
+                this.writeTextChunk(key, value);
+            }
+        }
+        if (this.isAnimated) {
+            this.writeFrameControlChunk();
+            this.sequenceNumber++;
+        }
+        if (this.sequenceNumber <= 1) {
+            PngEncoder.writeChunk(this.output, 'IDAT', compressed);
+        }
+        else {
+            const fdat = new OutputBuffer({
+                bigEndian: true,
+            });
+            fdat.writeUint32(this.sequenceNumber);
+            fdat.writeBytes(compressed);
+            PngEncoder.writeChunk(this.output, 'fdAT', fdat.getBytes());
+            this.sequenceNumber++;
+        }
+    }
+    finish() {
+        let bytes = undefined;
+        if (this.output === undefined) {
+            return bytes;
+        }
+        PngEncoder.writeChunk(this.output, 'IEND', new Uint8Array());
+        this.sequenceNumber = 0;
+        bytes = this.output.getBytes();
+        this.output = undefined;
+        return bytes;
+    }
+    encodeImage(image) {
+        this.isAnimated = false;
+        this.addFrame(image);
+        return this.finish();
+    }
+    encodeAnimation(animation) {
+        this.isAnimated = true;
+        this.frames = animation.frames.length;
+        this.repeat = animation.loopCount;
+        for (const f of animation) {
+            this.addFrame(f);
+        }
+        return this.finish();
+    }
+}
+PngEncoder.FILTER_NONE = 0;
+PngEncoder.FILTER_SUB = 1;
+PngEncoder.FILTER_UP = 2;
+PngEncoder.FILTER_AVERAGE = 3;
+PngEncoder.FILTER_PAETH = 4;
+PngEncoder.FILTER_AGRESSIVE = 5;
+//# sourceMappingURL=png-encoder.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/formats/win-encoder.js
+
+
+
+class WinEncoder {
+    constructor() {
+        this._type = 0;
+        this._supportsAnimation = false;
+    }
+    get type() {
+        return this._type;
+    }
+    get supportsAnimation() {
+        return this._supportsAnimation;
+    }
+    colorPlanesOrXHotSpot(_index) {
+        return 0;
+    }
+    bitsPerPixelOrYHotSpot(_index) {
+        return 0;
+    }
+    encodeImages(images) {
+        const count = images.length;
+        const out = new OutputBuffer();
+        out.writeUint16(0);
+        out.writeUint16(this.type);
+        out.writeUint16(count);
+        let offset = 6 + count * 16;
+        const imageDatas = [];
+        let i = 0;
+        for (const img of images) {
+            if (img.width > 256 || img.height > 256) {
+                throw new ImageError('ICO and CUR support only sizes until 256');
+            }
+            out.writeByte(img.width);
+            out.writeByte(img.height);
+            out.writeByte(0);
+            out.writeByte(0);
+            out.writeUint16(this.colorPlanesOrXHotSpot(i));
+            out.writeUint16(this.bitsPerPixelOrYHotSpot(i));
+            const data = new PngEncoder().encodeImage(img);
+            out.writeUint32(data.length);
+            out.writeUint32(offset);
+            offset += data.length;
+            i++;
+            imageDatas.push(data);
+        }
+        for (const imageData of imageDatas) {
+            out.writeBytes(imageData);
+        }
+        return out.getBytes();
+    }
+    encodeImage(image) {
+        return this.encodeImages([image]);
+    }
+    encodeAnimation(_) {
+        return undefined;
+    }
+}
+//# sourceMappingURL=win-encoder.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/formats/ico-encoder.js
+
+class IcoEncoder extends WinEncoder {
+    constructor() {
+        super(...arguments);
+        this._type = 1;
+    }
+    colorPlanesOrXHotSpot(_index) {
+        return 0;
+    }
+    bitsPerPixelOrYHotSpot(_index) {
+        return 32;
+    }
+}
+//# sourceMappingURL=ico-encoder.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/formats/jpeg/component-data.js
+class ComponentData {
+    constructor(hSamples, maxHSamples, vSamples, maxVSamples, lines) {
+        this._hSamples = hSamples;
+        this._maxHSamples = maxHSamples;
+        this._vSamples = vSamples;
+        this._maxVSamples = maxVSamples;
+        this._lines = lines;
+        this._hScaleShift = this._hSamples === 1 && this._maxHSamples === 2 ? 1 : 0;
+        this._vScaleShift = this._vSamples === 1 && this._maxVSamples === 2 ? 1 : 0;
+    }
+    get hSamples() {
+        return this._hSamples;
+    }
+    get maxHSamples() {
+        return this._maxHSamples;
+    }
+    get vSamples() {
+        return this._vSamples;
+    }
+    get maxVSamples() {
+        return this._maxVSamples;
+    }
+    get lines() {
+        return this._lines;
+    }
+    get hScaleShift() {
+        return this._hScaleShift;
+    }
+    get vScaleShift() {
+        return this._vScaleShift;
+    }
+}
+//# sourceMappingURL=component-data.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/formats/jpeg/jpeg.js
+class Jpeg {
+}
+Jpeg.dctZigZag = [
+    0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5, 12, 19, 26, 33, 40,
+    48, 41, 34, 27, 20, 13, 6, 7, 14, 21, 28, 35, 42, 49, 56, 57, 50, 43, 36,
+    29, 22, 15, 23, 30, 37, 44, 51, 58, 59, 52, 45, 38, 31, 39, 46, 53, 60, 61,
+    54, 47, 55, 62, 63,
+    63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63,
+];
+Jpeg.DCTSIZE = 8;
+Jpeg.DCTSIZE2 = 64;
+Jpeg.NUM_QUANT_TBLS = 4;
+Jpeg.NUM_HUFF_TBLS = 4;
+Jpeg.NUM_ARITH_TBLS = 16;
+Jpeg.MAX_COMPS_IN_SCAN = 4;
+Jpeg.MAX_SAMP_FACTOR = 4;
+Jpeg.M_SOF0 = 0xc0;
+Jpeg.M_SOF1 = 0xc1;
+Jpeg.M_SOF2 = 0xc2;
+Jpeg.M_SOF3 = 0xc3;
+Jpeg.M_SOF5 = 0xc5;
+Jpeg.M_SOF6 = 0xc6;
+Jpeg.M_SOF7 = 0xc7;
+Jpeg.M_JPG = 0xc8;
+Jpeg.M_SOF9 = 0xc9;
+Jpeg.M_SOF10 = 0xca;
+Jpeg.M_SOF11 = 0xcb;
+Jpeg.M_SOF13 = 0xcd;
+Jpeg.M_SOF14 = 0xce;
+Jpeg.M_SOF15 = 0xcf;
+Jpeg.M_DHT = 0xc4;
+Jpeg.M_DAC = 0xcc;
+Jpeg.M_RST0 = 0xd0;
+Jpeg.M_RST1 = 0xd1;
+Jpeg.M_RST2 = 0xd2;
+Jpeg.M_RST3 = 0xd3;
+Jpeg.M_RST4 = 0xd4;
+Jpeg.M_RST5 = 0xd5;
+Jpeg.M_RST6 = 0xd6;
+Jpeg.M_RST7 = 0xd7;
+Jpeg.M_SOI = 0xd8;
+Jpeg.M_EOI = 0xd9;
+Jpeg.M_SOS = 0xda;
+Jpeg.M_DQT = 0xdb;
+Jpeg.M_DNL = 0xdc;
+Jpeg.M_DRI = 0xdd;
+Jpeg.M_DHP = 0xde;
+Jpeg.M_EXP = 0xdf;
+Jpeg.M_APP0 = 0xe0;
+Jpeg.M_APP1 = 0xe1;
+Jpeg.M_APP2 = 0xe2;
+Jpeg.M_APP3 = 0xe3;
+Jpeg.M_APP4 = 0xe4;
+Jpeg.M_APP5 = 0xe5;
+Jpeg.M_APP6 = 0xe6;
+Jpeg.M_APP7 = 0xe7;
+Jpeg.M_APP8 = 0xe8;
+Jpeg.M_APP9 = 0xe9;
+Jpeg.M_APP10 = 0xea;
+Jpeg.M_APP11 = 0xeb;
+Jpeg.M_APP12 = 0xec;
+Jpeg.M_APP13 = 0xed;
+Jpeg.M_APP14 = 0xee;
+Jpeg.M_APP15 = 0xef;
+Jpeg.M_JPG0 = 0xf0;
+Jpeg.M_JPG13 = 0xfd;
+Jpeg.M_COM = 0xfe;
+Jpeg.M_TEM = 0x01;
+Jpeg.M_ERROR = 0x100;
+//# sourceMappingURL=jpeg.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/formats/jpeg/jpeg-adobe.js
+class JpegAdobe {
+    constructor(version, flags0, flags1, transformCode) {
+        this._version = version;
+        this._flags0 = flags0;
+        this._flags1 = flags1;
+        this._transformCode = transformCode;
+    }
+    get version() {
+        return this._version;
+    }
+    get flags0() {
+        return this._flags0;
+    }
+    get flags1() {
+        return this._flags1;
+    }
+    get transformCode() {
+        return this._transformCode;
+    }
+}
+//# sourceMappingURL=jpeg-adobe.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/formats/jpeg/jpeg-component.js
+class JpegComponent {
+    constructor(hSamples, vSamples, quantizationTableList, quantizationIndex) {
+        this._blocks = new Array();
+        this._blocksPerLine = 0;
+        this._blocksPerColumn = 0;
+        this._huffmanTableDC = [];
+        this._huffmanTableAC = [];
+        this._pred = 0;
+        this._hSamples = hSamples;
+        this._vSamples = vSamples;
+        this._quantizationTableList = quantizationTableList;
+        this._quantizationIndex = quantizationIndex;
+    }
+    get hSamples() {
+        return this._hSamples;
+    }
+    get vSamples() {
+        return this._vSamples;
+    }
+    get blocks() {
+        return this._blocks;
+    }
+    get blocksPerLine() {
+        return this._blocksPerLine;
+    }
+    get blocksPerColumn() {
+        return this._blocksPerColumn;
+    }
+    set huffmanTableDC(v) {
+        this._huffmanTableDC = v;
+    }
+    get huffmanTableDC() {
+        return this._huffmanTableDC;
+    }
+    set huffmanTableAC(v) {
+        this._huffmanTableAC = v;
+    }
+    get huffmanTableAC() {
+        return this._huffmanTableAC;
+    }
+    set pred(v) {
+        this._pred = v;
+    }
+    get pred() {
+        return this._pred;
+    }
+    get quantizationTable() {
+        return this._quantizationTableList[this._quantizationIndex];
+    }
+    setBlocks(blocks, blocksPerLine, blocksPerColumn) {
+        this._blocks = blocks;
+        this._blocksPerLine = blocksPerLine;
+        this._blocksPerColumn = blocksPerColumn;
+    }
+}
+//# sourceMappingURL=jpeg-component.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/formats/jpeg/jpeg-frame.js
+class JpegFrame {
+    constructor(components, componentsOrder, extended, progressive, precision, scanLines, samplesPerLine) {
+        this._maxHSamples = 0;
+        this._maxVSamples = 0;
+        this._mcusPerLine = 0;
+        this._mcusPerColumn = 0;
+        this._components = components;
+        this._componentsOrder = componentsOrder;
+        this._extended = extended;
+        this._progressive = progressive;
+        this._precision = precision;
+        this._scanLines = scanLines;
+        this._samplesPerLine = samplesPerLine;
+    }
+    get components() {
+        return this._components;
+    }
+    get componentsOrder() {
+        return this._componentsOrder;
+    }
+    get extended() {
+        return this._extended;
+    }
+    get progressive() {
+        return this._progressive;
+    }
+    get precision() {
+        return this._precision;
+    }
+    get scanLines() {
+        return this._scanLines;
+    }
+    get samplesPerLine() {
+        return this._samplesPerLine;
+    }
+    get maxHSamples() {
+        return this._maxHSamples;
+    }
+    get maxVSamples() {
+        return this._maxVSamples;
+    }
+    get mcusPerLine() {
+        return this._mcusPerLine;
+    }
+    get mcusPerColumn() {
+        return this._mcusPerColumn;
+    }
+    static getEmptyBlocks(blocksPerLineForMcu, blocksPerColumnForMcu) {
+        const blocks = new Array();
+        for (let ic = 0; ic < blocksPerColumnForMcu; ic++) {
+            const line = new Array(blocksPerLineForMcu);
+            for (let ir = 0; ir < blocksPerLineForMcu; ir++) {
+                line[ir] = new Int32Array(64);
+            }
+            blocks[ic] = line;
+        }
+        return blocks;
+    }
+    prepare() {
+        for (const [_, component] of this._components) {
+            this._maxHSamples = Math.max(this._maxHSamples, component.hSamples);
+            this._maxVSamples = Math.max(this._maxVSamples, component.vSamples);
+        }
+        this._mcusPerLine = Math.ceil(this._samplesPerLine / 8 / this._maxHSamples);
+        this._mcusPerColumn = Math.ceil(this._scanLines / 8 / this._maxVSamples);
+        for (const [_, component] of this._components) {
+            const blocksPerLine = Math.ceil((Math.ceil(this._samplesPerLine / 8) * component.hSamples) /
+                this._maxHSamples);
+            const blocksPerColumn = Math.ceil((Math.ceil(this._scanLines / 8) * component.vSamples) / this.maxVSamples);
+            const blocksPerLineForMcu = this._mcusPerLine * component.hSamples;
+            const blocksPerColumnForMcu = this._mcusPerColumn * component.vSamples;
+            const blocks = JpegFrame.getEmptyBlocks(blocksPerLineForMcu, blocksPerColumnForMcu);
+            component.setBlocks(blocks, blocksPerLine, blocksPerColumn);
+        }
+    }
+}
+//# sourceMappingURL=jpeg-frame.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/formats/jpeg/jpeg-huffman.js
+class JpegHuffman {
+    constructor() {
+        this._children = new Array();
+        this._index = 0;
+    }
+    get children() {
+        return this._children;
+    }
+    get index() {
+        return this._index;
+    }
+    incrementIndex() {
+        this._index++;
+    }
+}
+//# sourceMappingURL=jpeg-huffman.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/formats/jpeg/jpeg-info.js
+class JpegInfo {
+    constructor() {
+        this._width = 0;
+        this._height = 0;
+        this._backgroundColor = 0xffffffff;
+        this._numFrames = 1;
+    }
+    get width() {
+        return this._width;
+    }
+    get height() {
+        return this._height;
+    }
+    get backgroundColor() {
+        return this._backgroundColor;
+    }
+    get numFrames() {
+        return this._numFrames;
+    }
+    setSize(width, height) {
+        this._width = width;
+        this._height = height;
+    }
+}
+//# sourceMappingURL=jpeg-info.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/formats/jpeg/jpeg-jfif.js
+class JpegJfif {
+    constructor(thumbWidth, thumbHeight, majorVersion, minorVersion, densityUnits, xDensity, yDensity, thumbData) {
+        this._thumbWidth = thumbWidth;
+        this._thumbHeight = thumbHeight;
+        this._majorVersion = majorVersion;
+        this._minorVersion = minorVersion;
+        this._densityUnits = densityUnits;
+        this._xDensity = xDensity;
+        this._yDensity = yDensity;
+        this._thumbData = thumbData;
+    }
+    get thumbWidth() {
+        return this._thumbWidth;
+    }
+    get thumbHeight() {
+        return this._thumbHeight;
+    }
+    get majorVersion() {
+        return this._majorVersion;
+    }
+    get minorVersion() {
+        return this._minorVersion;
+    }
+    get densityUnits() {
+        return this._densityUnits;
+    }
+    get xDensity() {
+        return this._xDensity;
+    }
+    get yDensity() {
+        return this._yDensity;
+    }
+    get thumbData() {
+        return this._thumbData;
+    }
+}
+//# sourceMappingURL=jpeg-jfif.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/formats/jpeg/jpeg-quantize.js
+
+
+
+
+
+
+class JpegQuantize {
+    static clamp8(i) {
+        if (i < 0) {
+            return 0;
+        }
+        if (i > 255) {
+            return 255;
+        }
+        return i;
+    }
+    static quantizeAndInverse(quantizationTable, coefBlock, dataOut, dataIn) {
+        const p = dataIn;
+        const dctClipOffset = 256;
+        const dctClipLength = 768;
+        if (JpegQuantize.dctClip === undefined) {
+            JpegQuantize.dctClip = new Uint8Array(dctClipLength);
+            for (let i = -256; i < 0; ++i) {
+                JpegQuantize.dctClip[dctClipOffset + i] = 0;
+            }
+            for (let i = 0; i < 256; ++i) {
+                JpegQuantize.dctClip[dctClipOffset + i] = i;
+            }
+            for (let i = 256; i < 512; ++i) {
+                JpegQuantize.dctClip[dctClipOffset + i] = 255;
+            }
+        }
+        const COS_1 = 4017;
+        const SIN_1 = 799;
+        const COS_3 = 3406;
+        const SIN_3 = 2276;
+        const COS_6 = 1567;
+        const SIN_6 = 3784;
+        const SQRT_2 = 5793;
+        const SQRT_1D2 = 2896;
+        for (let i = 0; i < 64; i++) {
+            p[i] = coefBlock[i] * quantizationTable[i];
+        }
+        let row = 0;
+        for (let i = 0; i < 8; ++i, row += 8) {
+            if (p[1 + row] === 0 &&
+                p[2 + row] === 0 &&
+                p[3 + row] === 0 &&
+                p[4 + row] === 0 &&
+                p[5 + row] === 0 &&
+                p[6 + row] === 0 &&
+                p[7 + row] === 0) {
+                const t = BitOperators.shiftR(SQRT_2 * p[0 + row] + 512, 10);
+                p[row + 0] = t;
+                p[row + 1] = t;
+                p[row + 2] = t;
+                p[row + 3] = t;
+                p[row + 4] = t;
+                p[row + 5] = t;
+                p[row + 6] = t;
+                p[row + 7] = t;
+                continue;
+            }
+            let v0 = BitOperators.shiftR(SQRT_2 * p[0 + row] + 128, 8);
+            let v1 = BitOperators.shiftR(SQRT_2 * p[4 + row] + 128, 8);
+            let v2 = p[2 + row];
+            let v3 = p[6 + row];
+            let v4 = BitOperators.shiftR(SQRT_1D2 * (p[1 + row] - p[7 + row]) + 128, 8);
+            let v7 = BitOperators.shiftR(SQRT_1D2 * (p[1 + row] + p[7 + row]) + 128, 8);
+            let v5 = BitOperators.shiftL(p[3 + row], 4);
+            let v6 = BitOperators.shiftL(p[5 + row], 4);
+            let t = BitOperators.shiftR(v0 - v1 + 1, 1);
+            v0 = BitOperators.shiftR(v0 + v1 + 1, 1);
+            v1 = t;
+            t = BitOperators.shiftR(v2 * SIN_6 + v3 * COS_6 + 128, 8);
+            v2 = BitOperators.shiftR(v2 * COS_6 - v3 * SIN_6 + 128, 8);
+            v3 = t;
+            t = BitOperators.shiftR(v4 - v6 + 1, 1);
+            v4 = BitOperators.shiftR(v4 + v6 + 1, 1);
+            v6 = t;
+            t = BitOperators.shiftR(v7 + v5 + 1, 1);
+            v5 = BitOperators.shiftR(v7 - v5 + 1, 1);
+            v7 = t;
+            t = BitOperators.shiftR(v0 - v3 + 1, 1);
+            v0 = BitOperators.shiftR(v0 + v3 + 1, 1);
+            v3 = t;
+            t = BitOperators.shiftR(v1 - v2 + 1, 1);
+            v1 = BitOperators.shiftR(v1 + v2 + 1, 1);
+            v2 = t;
+            t = BitOperators.shiftR(v4 * SIN_3 + v7 * COS_3 + 2048, 12);
+            v4 = BitOperators.shiftR(v4 * COS_3 - v7 * SIN_3 + 2048, 12);
+            v7 = t;
+            t = BitOperators.shiftR(v5 * SIN_1 + v6 * COS_1 + 2048, 12);
+            v5 = BitOperators.shiftR(v5 * COS_1 - v6 * SIN_1 + 2048, 12);
+            v6 = t;
+            p[0 + row] = v0 + v7;
+            p[7 + row] = v0 - v7;
+            p[1 + row] = v1 + v6;
+            p[6 + row] = v1 - v6;
+            p[2 + row] = v2 + v5;
+            p[5 + row] = v2 - v5;
+            p[3 + row] = v3 + v4;
+            p[4 + row] = v3 - v4;
+        }
+        for (let i = 0; i < 8; ++i) {
+            const col = i;
+            if (p[1 * 8 + col] === 0 &&
+                p[2 * 8 + col] === 0 &&
+                p[3 * 8 + col] === 0 &&
+                p[4 * 8 + col] === 0 &&
+                p[5 * 8 + col] === 0 &&
+                p[6 * 8 + col] === 0 &&
+                p[7 * 8 + col] === 0) {
+                const t = BitOperators.shiftR(SQRT_2 * dataIn[i] + 8192, 14);
+                p[0 * 8 + col] = t;
+                p[1 * 8 + col] = t;
+                p[2 * 8 + col] = t;
+                p[3 * 8 + col] = t;
+                p[4 * 8 + col] = t;
+                p[5 * 8 + col] = t;
+                p[6 * 8 + col] = t;
+                p[7 * 8 + col] = t;
+                continue;
+            }
+            let v0 = BitOperators.shiftR(SQRT_2 * p[0 * 8 + col] + 2048, 12);
+            let v1 = BitOperators.shiftR(SQRT_2 * p[4 * 8 + col] + 2048, 12);
+            let v2 = p[2 * 8 + col];
+            let v3 = p[6 * 8 + col];
+            let v4 = BitOperators.shiftR(SQRT_1D2 * (p[1 * 8 + col] - p[7 * 8 + col]) + 2048, 12);
+            let v7 = BitOperators.shiftR(SQRT_1D2 * (p[1 * 8 + col] + p[7 * 8 + col]) + 2048, 12);
+            let v5 = p[3 * 8 + col];
+            let v6 = p[5 * 8 + col];
+            let t = BitOperators.shiftR(v0 - v1 + 1, 1);
+            v0 = BitOperators.shiftR(v0 + v1 + 1, 1);
+            v1 = t;
+            t = BitOperators.shiftR(v2 * SIN_6 + v3 * COS_6 + 2048, 12);
+            v2 = BitOperators.shiftR(v2 * COS_6 - v3 * SIN_6 + 2048, 12);
+            v3 = t;
+            t = BitOperators.shiftR(v4 - v6 + 1, 1);
+            v4 = BitOperators.shiftR(v4 + v6 + 1, 1);
+            v6 = t;
+            t = BitOperators.shiftR(v7 + v5 + 1, 1);
+            v5 = BitOperators.shiftR(v7 - v5 + 1, 1);
+            v7 = t;
+            t = BitOperators.shiftR(v0 - v3 + 1, 1);
+            v0 = BitOperators.shiftR(v0 + v3 + 1, 1);
+            v3 = t;
+            t = BitOperators.shiftR(v1 - v2 + 1, 1);
+            v1 = BitOperators.shiftR(v1 + v2 + 1, 1);
+            v2 = t;
+            t = BitOperators.shiftR(v4 * SIN_3 + v7 * COS_3 + 2048, 12);
+            v4 = BitOperators.shiftR(v4 * COS_3 - v7 * SIN_3 + 2048, 12);
+            v7 = t;
+            t = BitOperators.shiftR(v5 * SIN_1 + v6 * COS_1 + 2048, 12);
+            v5 = BitOperators.shiftR(v5 * COS_1 - v6 * SIN_1 + 2048, 12);
+            v6 = t;
+            p[0 * 8 + col] = v0 + v7;
+            p[7 * 8 + col] = v0 - v7;
+            p[1 * 8 + col] = v1 + v6;
+            p[6 * 8 + col] = v1 - v6;
+            p[2 * 8 + col] = v2 + v5;
+            p[5 * 8 + col] = v2 - v5;
+            p[3 * 8 + col] = v3 + v4;
+            p[4 * 8 + col] = v3 - v4;
+        }
+        for (let i = 0; i < 64; ++i) {
+            dataOut[i] =
+                JpegQuantize.dctClip[dctClipOffset + 128 + BitOperators.shiftR(p[i] + 8, 4)];
+        }
+    }
+    static getImageFromJpeg(jpeg) {
+        const orientation = jpeg.exifData.imageIfd.hasOrientation
+            ? jpeg.exifData.imageIfd.orientation
+            : 0;
+        const flipWidthHeight = orientation >= 5 && orientation <= 8;
+        const width = flipWidthHeight ? jpeg.height : jpeg.width;
+        const height = flipWidthHeight ? jpeg.width : jpeg.height;
+        const image = new MemoryImage({
+            width: width,
+            height: height,
+            rgbChannelSet: RgbChannelSet.rgb,
+        });
+        image.exifData = ExifData.from(jpeg.exifData);
+        image.exifData.imageIfd.orientation = undefined;
+        let component1 = undefined;
+        let component2 = undefined;
+        let component3 = undefined;
+        let component4 = undefined;
+        let component1Line = undefined;
+        let component2Line = undefined;
+        let component3Line = undefined;
+        let component4Line = undefined;
+        let offset = 0;
+        let Y = 0;
+        let Cb = 0;
+        let Cr = 0;
+        let K = 0;
+        let C = 0;
+        let M = 0;
+        let Ye = 0;
+        let R = 0;
+        let G = 0;
+        let B = 0;
+        let colorTransform = false;
+        const h1 = jpeg.height - 1;
+        const w1 = jpeg.width - 1;
+        switch (jpeg.components.length) {
+            case 1: {
+                const component1 = jpeg.components[0];
+                const lines = component1.lines;
+                const hShift1 = component1.hScaleShift;
+                const vShift1 = component1.vScaleShift;
+                for (let y = 0; y < jpeg.height; y++) {
+                    const y1 = y >> vShift1;
+                    const component1Line = lines[y1];
+                    for (let x = 0; x < jpeg.width; x++) {
+                        const x1 = x >> hShift1;
+                        const Y = component1Line[x1];
+                        const c = color_Color.getColor(Y, Y, Y);
+                        if (orientation === 2) {
+                            image.setPixel(w1 - x, y, c);
+                        }
+                        else if (orientation === 3) {
+                            image.setPixel(w1 - x, h1 - y, c);
+                        }
+                        else if (orientation === 4) {
+                            image.setPixel(x, h1 - y, c);
+                        }
+                        else if (orientation === 5) {
+                            image.setPixel(y, x, c);
+                        }
+                        else if (orientation === 6) {
+                            image.setPixel(h1 - y, x, c);
+                        }
+                        else if (orientation === 7) {
+                            image.setPixel(h1 - y, w1 - x, c);
+                        }
+                        else if (orientation === 8) {
+                            image.setPixel(y, w1 - x, c);
+                        }
+                        else {
+                            image.setPixelByIndex(offset++, c);
+                        }
+                    }
+                }
+                break;
+            }
+            case 3: {
+                colorTransform = true;
+                component1 = jpeg.components[0];
+                component2 = jpeg.components[1];
+                component3 = jpeg.components[2];
+                const lines1 = component1.lines;
+                const lines2 = component2.lines;
+                const lines3 = component3.lines;
+                const hShift1 = component1.hScaleShift;
+                const vShift1 = component1.vScaleShift;
+                const hShift2 = component2.hScaleShift;
+                const vShift2 = component2.vScaleShift;
+                const hShift3 = component3.hScaleShift;
+                const vShift3 = component3.vScaleShift;
+                for (let y = 0; y < jpeg.height; y++) {
+                    const y1 = y >> vShift1;
+                    const y2 = y >> vShift2;
+                    const y3 = y >> vShift3;
+                    component1Line = lines1[y1];
+                    component2Line = lines2[y2];
+                    component3Line = lines3[y3];
+                    for (let x = 0; x < jpeg.width; x++) {
+                        const x1 = x >> hShift1;
+                        const x2 = x >> hShift2;
+                        const x3 = x >> hShift3;
+                        Y = component1Line[x1] << 8;
+                        Cb = component2Line[x2] - 128;
+                        Cr = component3Line[x3] - 128;
+                        R = Y + 359 * Cr + 128;
+                        G = Y - 88 * Cb - 183 * Cr + 128;
+                        B = Y + 454 * Cb + 128;
+                        R = this.clamp8(BitOperators.shiftR(R, 8));
+                        G = this.clamp8(BitOperators.shiftR(G, 8));
+                        B = this.clamp8(BitOperators.shiftR(B, 8));
+                        const c = color_Color.getColor(R, G, B);
+                        if (orientation === 2) {
+                            image.setPixel(w1 - x, y, c);
+                        }
+                        else if (orientation === 3) {
+                            image.setPixel(w1 - x, h1 - y, c);
+                        }
+                        else if (orientation === 4) {
+                            image.setPixel(x, h1 - y, c);
+                        }
+                        else if (orientation === 5) {
+                            image.setPixel(y, x, c);
+                        }
+                        else if (orientation === 6) {
+                            image.setPixel(h1 - y, x, c);
+                        }
+                        else if (orientation === 7) {
+                            image.setPixel(h1 - y, w1 - x, c);
+                        }
+                        else if (orientation === 8) {
+                            image.setPixel(y, w1 - x, c);
+                        }
+                        else {
+                            image.setPixelByIndex(offset++, c);
+                        }
+                    }
+                }
+                break;
+            }
+            case 4: {
+                if (jpeg.adobe === undefined) {
+                    throw new ImageError('Unsupported color mode (4 components)');
+                }
+                colorTransform = false;
+                if (jpeg.adobe.transformCode !== 0) {
+                    colorTransform = true;
+                }
+                component1 = jpeg.components[0];
+                component2 = jpeg.components[1];
+                component3 = jpeg.components[2];
+                component4 = jpeg.components[3];
+                const lines1 = component1.lines;
+                const lines2 = component2.lines;
+                const lines3 = component3.lines;
+                const lines4 = component4.lines;
+                const hShift1 = component1.hScaleShift;
+                const vShift1 = component1.vScaleShift;
+                const hShift2 = component2.hScaleShift;
+                const vShift2 = component2.vScaleShift;
+                const hShift3 = component3.hScaleShift;
+                const vShift3 = component3.vScaleShift;
+                const hShift4 = component4.hScaleShift;
+                const vShift4 = component4.vScaleShift;
+                for (let y = 0; y < jpeg.height; y++) {
+                    const y1 = y >> vShift1;
+                    const y2 = y >> vShift2;
+                    const y3 = y >> vShift3;
+                    const y4 = y >> vShift4;
+                    component1Line = lines1[y1];
+                    component2Line = lines2[y2];
+                    component3Line = lines3[y3];
+                    component4Line = lines4[y4];
+                    for (let x = 0; x < jpeg.width; x++) {
+                        const x1 = x >> hShift1;
+                        const x2 = x >> hShift2;
+                        const x3 = x >> hShift3;
+                        const x4 = x >> hShift4;
+                        if (!colorTransform) {
+                            C = component1Line[x1];
+                            M = component2Line[x2];
+                            Ye = component3Line[x3];
+                            K = component4Line[x4];
+                        }
+                        else {
+                            Y = component1Line[x1];
+                            Cb = component2Line[x2];
+                            Cr = component3Line[x3];
+                            K = component4Line[x4];
+                            C = 255 - this.clamp8(Math.trunc(Y + 1.402 * (Cr - 128)));
+                            M =
+                                255 -
+                                    this.clamp8(Math.trunc(Y - 0.3441363 * (Cb - 128) - 0.71413636 * (Cr - 128)));
+                            Ye = 255 - this.clamp8(Math.trunc(Y + 1.772 * (Cb - 128)));
+                        }
+                        R = BitOperators.shiftR(C * K, 8);
+                        G = BitOperators.shiftR(M * K, 8);
+                        B = BitOperators.shiftR(Ye * K, 8);
+                        const c = color_Color.getColor(R, G, B);
+                        if (orientation === 2) {
+                            image.setPixel(w1 - x, y, c);
+                        }
+                        else if (orientation === 3) {
+                            image.setPixel(w1 - x, h1 - y, c);
+                        }
+                        else if (orientation === 4) {
+                            image.setPixel(x, h1 - y, c);
+                        }
+                        else if (orientation === 5) {
+                            image.setPixel(y, x, c);
+                        }
+                        else if (orientation === 6) {
+                            image.setPixel(h1 - y, x, c);
+                        }
+                        else if (orientation === 7) {
+                            image.setPixel(h1 - y, w1 - x, c);
+                        }
+                        else if (orientation === 8) {
+                            image.setPixel(y, w1 - x, c);
+                        }
+                        else {
+                            image.setPixelByIndex(offset++, c);
+                        }
+                    }
+                }
+                break;
+            }
+            default:
+                throw new ImageError('Unsupported color mode');
+        }
+        return image;
+    }
+}
+//# sourceMappingURL=jpeg-quantize.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/formats/jpeg/jpeg-scan.js
+
+
+class JpegScan {
+    constructor(input, frame, components, spectralStart, spectralEnd, successivePrev, successive, resetInterval) {
+        this._bitsData = 0;
+        this._bitsCount = 0;
+        this._eobrun = 0;
+        this._successiveACState = 0;
+        this._successiveACNextValue = 0;
+        this._input = input;
+        this._frame = frame;
+        this._precision = frame.precision;
+        this._samplesPerLine = frame.samplesPerLine;
+        this._scanLines = frame.scanLines;
+        this._mcusPerLine = frame.mcusPerLine;
+        this._progressive = frame.progressive;
+        this._maxH = frame.maxHSamples;
+        this._maxV = frame.maxVSamples;
+        this._components = components;
+        this._resetInterval = resetInterval;
+        this._spectralStart = spectralStart;
+        this._spectralEnd = spectralEnd;
+        this._successivePrev = successivePrev;
+        this._successive = successive;
+    }
+    get input() {
+        return this._input;
+    }
+    get frame() {
+        return this._frame;
+    }
+    get precision() {
+        return this._precision;
+    }
+    get samplesPerLine() {
+        return this._samplesPerLine;
+    }
+    get scanLines() {
+        return this._scanLines;
+    }
+    get mcusPerLine() {
+        return this._mcusPerLine;
+    }
+    get progressive() {
+        return this._progressive;
+    }
+    get maxH() {
+        return this._maxH;
+    }
+    get maxV() {
+        return this._maxV;
+    }
+    get components() {
+        return this._components;
+    }
+    get resetInterval() {
+        return this._resetInterval;
+    }
+    get spectralStart() {
+        return this._spectralStart;
+    }
+    get spectralEnd() {
+        return this._spectralEnd;
+    }
+    get successivePrev() {
+        return this._successivePrev;
+    }
+    get successive() {
+        return this._successive;
+    }
+    get bitsData() {
+        return this._bitsData;
+    }
+    get bitsCount() {
+        return this._bitsCount;
+    }
+    get eobrun() {
+        return this._eobrun;
+    }
+    get successiveACState() {
+        return this._successiveACState;
+    }
+    get successiveACNextValue() {
+        return this._successiveACNextValue;
+    }
+    readBit() {
+        if (this.bitsCount > 0) {
+            this._bitsCount--;
+            return (this._bitsData >> this._bitsCount) & 1;
+        }
+        if (this._input.isEOS) {
+            return undefined;
+        }
+        this._bitsData = this._input.readByte();
+        if (this._bitsData === 0xff) {
+            const nextByte = this.input.readByte();
+            if (nextByte !== 0) {
+                throw new ImageError(`unexpected marker: ${((this._bitsData << 8) | nextByte).toString(16)}`);
+            }
+        }
+        this._bitsCount = 7;
+        return (this._bitsData >> 7) & 1;
+    }
+    decodeHuffman(tree) {
+        let node = tree;
+        let bit = undefined;
+        while ((bit = this.readBit()) !== undefined) {
+            node = node[bit];
+            if (typeof node === 'number') {
+                return Math.trunc(node);
+            }
+        }
+        return undefined;
+    }
+    receive(length) {
+        let n = 0;
+        let len = length;
+        while (len > 0) {
+            const bit = this.readBit();
+            if (bit === undefined) {
+                return undefined;
+            }
+            n = (n << 1) | bit;
+            len--;
+        }
+        return n;
+    }
+    receiveAndExtend(length) {
+        if (length === 1) {
+            return this.readBit() === 1 ? 1 : -1;
+        }
+        const n = this.receive(length);
+        if (n >= 1 << ((length !== null && length !== void 0 ? length : 0) - 1)) {
+            return n;
+        }
+        return n + (-1 << (length !== null && length !== void 0 ? length : 0)) + 1;
+    }
+    decodeBaseline(component, zz) {
+        const t = this.decodeHuffman(component.huffmanTableDC);
+        const diff = t === 0 ? 0 : this.receiveAndExtend(t);
+        component.pred += diff;
+        zz[0] = component.pred;
+        let k = 1;
+        while (k < 64) {
+            const rs = this.decodeHuffman(component.huffmanTableAC);
+            let s = rs & 15;
+            const r = rs >> 4;
+            if (s === 0) {
+                if (r < 15) {
+                    break;
+                }
+                k += 16;
+                continue;
+            }
+            k += r;
+            s = this.receiveAndExtend(s);
+            const z = Jpeg.dctZigZag[k];
+            zz[z] = s;
+            k++;
+        }
+    }
+    decodeDCFirst(component, zz) {
+        const t = this.decodeHuffman(component.huffmanTableDC);
+        const diff = t === 0 ? 0 : this.receiveAndExtend(t) << this._successive;
+        component.pred += diff;
+        zz[0] = component.pred;
+    }
+    decodeDCSuccessive(_, zz) {
+        zz[0] |= this.readBit() << this._successive;
+    }
+    decodeACFirst(component, zz) {
+        if (this._eobrun > 0) {
+            this._eobrun--;
+            return;
+        }
+        let k = this._spectralStart;
+        const e = this._spectralEnd;
+        while (k <= e) {
+            const rs = this.decodeHuffman(component.huffmanTableAC);
+            const s = rs & 15;
+            const r = rs >> 4;
+            if (s === 0) {
+                if (r < 15) {
+                    this._eobrun = this.receive(r) + (1 << r) - 1;
+                    break;
+                }
+                k += 16;
+                continue;
+            }
+            k += r;
+            const z = Jpeg.dctZigZag[k];
+            zz[z] = this.receiveAndExtend(s) * (1 << this._successive);
+            k++;
+        }
+    }
+    decodeACSuccessive(component, zz) {
+        let k = this._spectralStart;
+        const e = this._spectralEnd;
+        let s = 0;
+        let r = 0;
+        while (k <= e) {
+            const z = Jpeg.dctZigZag[k];
+            switch (this._successiveACState) {
+                case 0: {
+                    const rs = this.decodeHuffman(component.huffmanTableAC);
+                    if (rs === undefined) {
+                        throw new ImageError('Invalid progressive encoding');
+                    }
+                    s = rs & 15;
+                    r = rs >> 4;
+                    if (s === 0) {
+                        if (r < 15) {
+                            this._eobrun = this.receive(r) + (1 << r);
+                            this._successiveACState = 4;
+                        }
+                        else {
+                            r = 16;
+                            this._successiveACState = 1;
+                        }
+                    }
+                    else {
+                        if (s !== 1) {
+                            throw new ImageError('invalid ACn encoding');
+                        }
+                        this._successiveACNextValue = this.receiveAndExtend(s);
+                        this._successiveACState = r !== 0 ? 2 : 3;
+                    }
+                    continue;
+                }
+                case 1:
+                case 2: {
+                    if (zz[z] !== 0) {
+                        zz[z] += this.readBit() << this._successive;
+                    }
+                    else {
+                        r--;
+                        if (r === 0) {
+                            this._successiveACState = this._successiveACState === 2 ? 3 : 0;
+                        }
+                    }
+                    break;
+                }
+                case 3: {
+                    if (zz[z] !== 0) {
+                        zz[z] += this.readBit() << this._successive;
+                    }
+                    else {
+                        zz[z] = this._successiveACNextValue << this._successive;
+                        this._successiveACState = 0;
+                    }
+                    break;
+                }
+                case 4: {
+                    if (zz[z] !== 0) {
+                        zz[z] += this.readBit() << this._successive;
+                    }
+                    break;
+                }
+            }
+            k++;
+        }
+        if (this._successiveACState === 4) {
+            this._eobrun--;
+            if (this._eobrun === 0) {
+                this._successiveACState = 0;
+            }
+        }
+    }
+    decodeMcu(component, decodeFn, mcu, row, col) {
+        const mcuRow = Math.floor(mcu / this._mcusPerLine);
+        const mcuCol = mcu % this._mcusPerLine;
+        const blockRow = mcuRow * component.vSamples + row;
+        const blockCol = mcuCol * component.hSamples + col;
+        if (blockRow >= component.blocks.length) {
+            return;
+        }
+        const numCols = component.blocks[blockRow].length;
+        if (blockCol >= numCols) {
+            return;
+        }
+        decodeFn.call(this, component, component.blocks[blockRow][blockCol]);
+    }
+    decodeBlock(component, decodeFn, mcu) {
+        const blockRow = Math.floor(mcu / component.blocksPerLine);
+        const blockCol = mcu % component.blocksPerLine;
+        decodeFn.call(this, component, component.blocks[blockRow][blockCol]);
+    }
+    decode() {
+        const componentsLength = this._components.length;
+        let component = undefined;
+        let decodeFn = undefined;
+        if (this._progressive) {
+            if (this._spectralStart === 0) {
+                decodeFn =
+                    this._successivePrev === 0
+                        ? this.decodeDCFirst
+                        : this.decodeDCSuccessive;
+            }
+            else {
+                decodeFn =
+                    this._successivePrev === 0
+                        ? this.decodeACFirst
+                        : this.decodeACSuccessive;
+            }
+        }
+        else {
+            decodeFn = this.decodeBaseline;
+        }
+        let mcu = 0;
+        let mcuExpected = undefined;
+        if (componentsLength === 1) {
+            mcuExpected =
+                this._components[0].blocksPerLine * this._components[0].blocksPerColumn;
+        }
+        else {
+            mcuExpected = this._mcusPerLine * this._frame.mcusPerColumn;
+        }
+        if (this._resetInterval === undefined || this._resetInterval === 0) {
+            this._resetInterval = mcuExpected;
+        }
+        let h = undefined;
+        let v = undefined;
+        while (mcu < mcuExpected) {
+            for (let i = 0; i < componentsLength; i++) {
+                this._components[i].pred = 0;
+            }
+            this._eobrun = 0;
+            if (componentsLength === 1) {
+                component = this._components[0];
+                for (let n = 0; n < this._resetInterval; n++) {
+                    this.decodeBlock(component, decodeFn, mcu);
+                    mcu++;
+                }
+            }
+            else {
+                for (let n = 0; n < this._resetInterval; n++) {
+                    for (let i = 0; i < componentsLength; i++) {
+                        component = this.components[i];
+                        h = component.hSamples;
+                        v = component.vSamples;
+                        for (let j = 0; j < v; j++) {
+                            for (let k = 0; k < h; k++) {
+                                this.decodeMcu(component, decodeFn, mcu, j, k);
+                            }
+                        }
+                    }
+                    mcu++;
+                }
+            }
+            this._bitsCount = 0;
+            const m1 = this._input.getByte(0);
+            const m2 = this._input.getByte(1);
+            if (m1 === 0xff) {
+                if (m2 >= Jpeg.M_RST0 && m2 <= Jpeg.M_RST7) {
+                    this._input.skip(2);
+                }
+                else {
+                    break;
+                }
+            }
+        }
+    }
+}
+//# sourceMappingURL=jpeg-scan.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/formats/jpeg/jpeg-data.js
+
+
+
+
+
+
+
+
+
+
+
+
+
+class JpegData {
+    constructor() {
+        this._exifData = new ExifData();
+        this._quantizationTables = new Array(Jpeg.NUM_QUANT_TBLS);
+        this._frames = new Array();
+        this._huffmanTablesAC = new Array();
+        this._huffmanTablesDC = new Array();
+        this._components = new Array();
+    }
+    get input() {
+        return this._input;
+    }
+    get jfif() {
+        return this._jfif;
+    }
+    get adobe() {
+        return this._adobe;
+    }
+    get frame() {
+        return this._frame;
+    }
+    get resetInterval() {
+        return this._resetInterval;
+    }
+    get comment() {
+        return this._comment;
+    }
+    get exifData() {
+        return this._exifData;
+    }
+    get quantizationTables() {
+        return this._quantizationTables;
+    }
+    get frames() {
+        return this._frames;
+    }
+    get huffmanTablesAC() {
+        return this._huffmanTablesAC;
+    }
+    get huffmanTablesDC() {
+        return this._huffmanTablesDC;
+    }
+    get components() {
+        return this._components;
+    }
+    get width() {
+        return this._frame.samplesPerLine;
+    }
+    get height() {
+        return this._frame.scanLines;
+    }
+    readMarkers() {
+        let marker = this.nextMarker();
+        if (marker !== Jpeg.M_SOI) {
+            throw new ImageError('Start Of Image marker not found.');
+        }
+        marker = this.nextMarker();
+        while (marker !== Jpeg.M_EOI && !this._input.isEOS) {
+            const block = this.readBlock();
+            switch (marker) {
+                case Jpeg.M_APP0:
+                case Jpeg.M_APP1:
+                case Jpeg.M_APP2:
+                case Jpeg.M_APP3:
+                case Jpeg.M_APP4:
+                case Jpeg.M_APP5:
+                case Jpeg.M_APP6:
+                case Jpeg.M_APP7:
+                case Jpeg.M_APP8:
+                case Jpeg.M_APP9:
+                case Jpeg.M_APP10:
+                case Jpeg.M_APP11:
+                case Jpeg.M_APP12:
+                case Jpeg.M_APP13:
+                case Jpeg.M_APP14:
+                case Jpeg.M_APP15:
+                case Jpeg.M_COM:
+                    this.readAppData(marker, block);
+                    break;
+                case Jpeg.M_DQT:
+                    this.readDQT(block);
+                    break;
+                case Jpeg.M_SOF0:
+                case Jpeg.M_SOF1:
+                case Jpeg.M_SOF2:
+                    this.readFrame(marker, block);
+                    break;
+                case Jpeg.M_SOF3:
+                case Jpeg.M_SOF5:
+                case Jpeg.M_SOF6:
+                case Jpeg.M_SOF7:
+                case Jpeg.M_JPG:
+                case Jpeg.M_SOF9:
+                case Jpeg.M_SOF10:
+                case Jpeg.M_SOF11:
+                case Jpeg.M_SOF13:
+                case Jpeg.M_SOF14:
+                case Jpeg.M_SOF15:
+                    throw new ImageError(`Unhandled frame type ${marker.toString(16)}`);
+                case Jpeg.M_DHT:
+                    this.readDHT(block);
+                    break;
+                case Jpeg.M_DRI:
+                    this.readDRI(block);
+                    break;
+                case Jpeg.M_SOS:
+                    this.readSOS(block);
+                    break;
+                case 0xff:
+                    if (this._input.getByte(0) !== 0xff) {
+                        this._input.skip(-1);
+                    }
+                    break;
+                default:
+                    if (this._input.getByte(-3) === 0xff &&
+                        this._input.getByte(-2) >= 0xc0 &&
+                        this._input.getByte(-2) <= 0xfe) {
+                        this._input.skip(-3);
+                        break;
+                    }
+                    if (marker !== 0) {
+                        throw new ImageError(`Unknown JPEG marker ${marker.toString(16)}`);
+                    }
+                    break;
+            }
+            marker = this.nextMarker();
+        }
+    }
+    skipBlock() {
+        const length = this._input.readUint16();
+        if (length < 2) {
+            throw new ImageError('Invalid Block');
+        }
+        this._input.skip(length - 2);
+    }
+    validate(bytes) {
+        this._input = new InputBuffer({
+            buffer: bytes,
+            bigEndian: true,
+        });
+        const soiCheck = this._input.peekBytes(2);
+        if (soiCheck.getByte(0) !== 0xff || soiCheck.getByte(1) !== 0xd8) {
+            return false;
+        }
+        let marker = this.nextMarker();
+        if (marker !== Jpeg.M_SOI) {
+            return false;
+        }
+        let hasSOF = false;
+        let hasSOS = false;
+        marker = this.nextMarker();
+        while (marker !== Jpeg.M_EOI && !this._input.isEOS) {
+            const sectionByteSize = this._input.readUint16();
+            if (sectionByteSize < 2) {
+                break;
+            }
+            this._input.skip(sectionByteSize - 2);
+            switch (marker) {
+                case Jpeg.M_SOF0:
+                case Jpeg.M_SOF1:
+                case Jpeg.M_SOF2:
+                    hasSOF = true;
+                    break;
+                case Jpeg.M_SOS:
+                    hasSOS = true;
+                    break;
+                default:
+            }
+            marker = this.nextMarker();
+        }
+        return hasSOF && hasSOS;
+    }
+    readInfo(bytes) {
+        this._input = new InputBuffer({
+            buffer: bytes,
+            bigEndian: true,
+        });
+        let marker = this.nextMarker();
+        if (marker !== Jpeg.M_SOI) {
+            return undefined;
+        }
+        const info = new JpegInfo();
+        let hasSOF = false;
+        let hasSOS = false;
+        marker = this.nextMarker();
+        while (marker !== Jpeg.M_EOI && !this._input.isEOS) {
+            switch (marker) {
+                case Jpeg.M_SOF0:
+                case Jpeg.M_SOF1:
+                case Jpeg.M_SOF2:
+                    hasSOF = true;
+                    this.readFrame(marker, this.readBlock());
+                    break;
+                case Jpeg.M_SOS:
+                    hasSOS = true;
+                    this.skipBlock();
+                    break;
+                default:
+                    this.skipBlock();
+                    break;
+            }
+            marker = this.nextMarker();
+        }
+        if (this._frame !== undefined) {
+            info.setSize(this._frame.samplesPerLine, this._frame.scanLines);
+            this._frame = undefined;
+        }
+        this.frames.length = 0;
+        return hasSOF && hasSOS ? info : undefined;
+    }
+    read(bytes) {
+        this._input = new InputBuffer({
+            buffer: bytes,
+            bigEndian: true,
+        });
+        this.readMarkers();
+        if (this._frames.length !== 1) {
+            throw new ImageError('Only single frame JPEGs supported');
+        }
+        if (this._frame !== undefined) {
+            for (let i = 0; i < this._frame.componentsOrder.length; ++i) {
+                const component = this._frame.components.get(this._frame.componentsOrder[i]);
+                if (component !== undefined) {
+                    this.components.push(new ComponentData(component.hSamples, this._frame.maxHSamples, component.vSamples, this._frame.maxVSamples, JpegData.buildComponentData(component)));
+                }
+            }
+        }
+    }
+    getImage() {
+        return JpegQuantize.getImageFromJpeg(this);
+    }
+    static buildHuffmanTable(codeLengths, values) {
+        let k = 0;
+        const code = new Array();
+        let length = 16;
+        while (length > 0 && codeLengths[length - 1] === 0) {
+            length--;
+        }
+        code.push(new JpegHuffman());
+        let p = code[0];
+        for (let i = 0; i < length; i++) {
+            for (let j = 0; j < codeLengths[i]; j++) {
+                p = code.pop();
+                if (p.children.length <= p.index) {
+                    p.children.length = p.index + 1;
+                }
+                p.children[p.index] = values[k];
+                while (p.index > 0) {
+                    p = code.pop();
+                }
+                p.incrementIndex();
+                code.push(p);
+                while (code.length <= i) {
+                    const q = new JpegHuffman();
+                    code.push(q);
+                    if (p.children.length <= p.index) {
+                        p.children.length = p.index + 1;
+                    }
+                    p.children[p.index] = q.children;
+                    p = q;
+                }
+                k++;
+            }
+            if (i + 1 < length) {
+                const q = new JpegHuffman();
+                code.push(q);
+                if (p.children.length <= p.index) {
+                    p.children.length = p.index + 1;
+                }
+                p.children[p.index] = q.children;
+                p = q;
+            }
+        }
+        return code[0].children;
+    }
+    static buildComponentData(component) {
+        const blocksPerLine = component.blocksPerLine;
+        const blocksPerColumn = component.blocksPerColumn;
+        const samplesPerLine = blocksPerLine << 3;
+        const R = new Int32Array(64);
+        const r = new Uint8Array(64);
+        const lines = new Array(blocksPerColumn * 8);
+        let l = 0;
+        for (let blockRow = 0; blockRow < blocksPerColumn; blockRow++) {
+            const scanLine = blockRow << 3;
+            for (let i = 0; i < 8; i++) {
+                lines[l++] = new Uint8Array(samplesPerLine);
+            }
+            for (let blockCol = 0; blockCol < blocksPerLine; blockCol++) {
+                JpegQuantize.quantizeAndInverse(component.quantizationTable, component.blocks[blockRow][blockCol], r, R);
+                let offset = 0;
+                const sample = blockCol << 3;
+                for (let j = 0; j < 8; j++) {
+                    const line = lines[scanLine + j];
+                    for (let i = 0; i < 8; i++) {
+                        line[sample + i] = r[offset++];
+                    }
+                }
+            }
+        }
+        return lines;
+    }
+    static toFix(val) {
+        const FIXED_POINT = 20;
+        const ONE = 1 << FIXED_POINT;
+        return Math.trunc(val * ONE) & 0xffffffff;
+    }
+    readBlock() {
+        const length = this._input.readUint16();
+        if (length < 2) {
+            throw new ImageError('Invalid Block');
+        }
+        return this._input.readBytes(length - 2);
+    }
+    nextMarker() {
+        let c = 0;
+        if (this._input.isEOS) {
+            return c;
+        }
+        do {
+            do {
+                c = this._input.readByte();
+            } while (c !== 0xff && !this._input.isEOS);
+            if (this._input.isEOS) {
+                return c;
+            }
+            do {
+                c = this._input.readByte();
+            } while (c === 0xff && !this._input.isEOS);
+        } while (c === 0 && !this._input.isEOS);
+        return c;
+    }
+    readExifData(block) {
+        const exifSignature = 0x45786966;
+        const signature = block.readUint32();
+        if (signature !== exifSignature) {
+            return;
+        }
+        if (block.readUint16() !== 0) {
+            return;
+        }
+        this.exifData.read(block);
+    }
+    readAppData(marker, block) {
+        const appData = block;
+        if (marker === Jpeg.M_APP0) {
+            if (appData.getByte(0) === 0x4a &&
+                appData.getByte(1) === 0x46 &&
+                appData.getByte(2) === 0x49 &&
+                appData.getByte(3) === 0x46 &&
+                appData.getByte(4) === 0) {
+                const majorVersion = appData.getByte(5);
+                const minorVersion = appData.getByte(6);
+                const densityUnits = appData.getByte(7);
+                const xDensity = (appData.getByte(8) << 8) | appData.getByte(9);
+                const yDensity = (appData.getByte(10) << 8) | appData.getByte(11);
+                const thumbWidth = appData.getByte(12);
+                const thumbHeight = appData.getByte(13);
+                const thumbSize = 3 * thumbWidth * thumbHeight;
+                const thumbData = appData.subarray(14 + thumbSize, undefined, 14);
+                this._jfif = new JpegJfif(thumbWidth, thumbHeight, majorVersion, minorVersion, densityUnits, xDensity, yDensity, thumbData);
+            }
+        }
+        else if (marker === Jpeg.M_APP1) {
+            this.readExifData(appData);
+        }
+        else if (marker === Jpeg.M_APP14) {
+            if (appData.getByte(0) === 0x41 &&
+                appData.getByte(1) === 0x64 &&
+                appData.getByte(2) === 0x6f &&
+                appData.getByte(3) === 0x62 &&
+                appData.getByte(4) === 0x65 &&
+                appData.getByte(5) === 0) {
+                const version = appData.getByte(6);
+                const flags0 = (appData.getByte(7) << 8) | appData.getByte(8);
+                const flags1 = (appData.getByte(9) << 8) | appData.getByte(10);
+                const transformCode = appData.getByte(11);
+                this._adobe = new JpegAdobe(version, flags0, flags1, transformCode);
+            }
+        }
+        else if (marker === Jpeg.M_COM) {
+            try {
+                this._comment = appData.readStringUtf8();
+            }
+            catch (_) {
+            }
+        }
+    }
+    readDQT(block) {
+        while (!block.isEOS) {
+            let n = block.readByte();
+            const prec = n >> 4;
+            n &= 0x0f;
+            if (n >= Jpeg.NUM_QUANT_TBLS) {
+                throw new ImageError('Invalid number of quantization tables');
+            }
+            if (this._quantizationTables[n] === undefined) {
+                this._quantizationTables[n] = new Int16Array(64);
+            }
+            const tableData = this._quantizationTables[n];
+            if (tableData !== undefined) {
+                for (let i = 0; i < Jpeg.DCTSIZE2; i++) {
+                    const tmp = prec !== 0 ? block.readUint16() : block.readByte();
+                    tableData[Jpeg.dctZigZag[i]] = tmp;
+                }
+            }
+        }
+        if (!block.isEOS) {
+            throw new ImageError('Bad length for DQT block');
+        }
+    }
+    readFrame(marker, block) {
+        if (this._frame !== undefined) {
+            throw new ImageError('Duplicate JPG frame data found.');
+        }
+        const extended = marker === Jpeg.M_SOF1;
+        const progressive = marker === Jpeg.M_SOF2;
+        const precision = block.readByte();
+        const scanLines = block.readUint16();
+        const samplesPerLine = block.readUint16();
+        const numComponents = block.readByte();
+        const components = new Map();
+        const componentsOrder = new Array();
+        for (let i = 0; i < numComponents; i++) {
+            const componentId = block.readByte();
+            const x = block.readByte();
+            const h = (x >> 4) & 15;
+            const v = x & 15;
+            const qId = block.readByte();
+            componentsOrder.push(componentId);
+            const component = new JpegComponent(h, v, this._quantizationTables, qId);
+            components.set(componentId, component);
+        }
+        this._frame = new JpegFrame(components, componentsOrder, extended, progressive, precision, scanLines, samplesPerLine);
+        this._frame.prepare();
+        this.frames.push(this._frame);
+    }
+    readDHT(block) {
+        while (!block.isEOS) {
+            let index = block.readByte();
+            const bits = new Uint8Array(16);
+            let count = 0;
+            for (let j = 0; j < 16; j++) {
+                bits[j] = block.readByte();
+                count += bits[j];
+            }
+            const huffmanValues = new Uint8Array(count);
+            for (let j = 0; j < count; j++) {
+                huffmanValues[j] = block.readByte();
+            }
+            let ht = [];
+            if ((index & 0x10) !== 0) {
+                index -= 0x10;
+                ht = this._huffmanTablesAC;
+            }
+            else {
+                ht = this._huffmanTablesDC;
+            }
+            if (ht.length <= index) {
+                ht.length = index + 1;
+            }
+            ht[index] = JpegData.buildHuffmanTable(bits, huffmanValues);
+        }
+    }
+    readDRI(block) {
+        this._resetInterval = block.readUint16();
+    }
+    readSOS(block) {
+        const n = block.readByte();
+        if (n < 1 || n > Jpeg.MAX_COMPS_IN_SCAN) {
+            throw new ImageError('Invalid SOS block');
+        }
+        const components = new Array();
+        for (let i = 0; i < n; i++) {
+            const id = block.readByte();
+            const c = block.readByte();
+            if (!this._frame.components.has(id)) {
+                throw new ImageError('Invalid Component in SOS block');
+            }
+            const component = this._frame.components.get(id);
+            if (component !== undefined) {
+                const dcTableNumber = (c >> 4) & 15;
+                const acTableNumber = c & 15;
+                if (dcTableNumber < this._huffmanTablesDC.length) {
+                    component.huffmanTableDC = this._huffmanTablesDC[dcTableNumber];
+                }
+                if (acTableNumber < this._huffmanTablesAC.length) {
+                    component.huffmanTableAC = this._huffmanTablesAC[acTableNumber];
+                }
+                components.push(component);
+            }
+        }
+        const spectralStart = block.readByte();
+        const spectralEnd = block.readByte();
+        const successiveApproximation = block.readByte();
+        const Ah = (successiveApproximation >> 4) & 15;
+        const Al = successiveApproximation & 15;
+        const scan = new JpegScan(this._input, this._frame, components, spectralStart, spectralEnd, Ah, Al, this._resetInterval);
+        scan.decode();
+    }
+}
+JpegData.CRR = [
+    -179, -178, -177, -175, -174, -172, -171, -170, -168, -167, -165, -164,
+    -163, -161, -160, -158, -157, -156, -154, -153, -151, -150, -149, -147,
+    -146, -144, -143, -142, -140, -139, -137, -136, -135, -133, -132, -130,
+    -129, -128, -126, -125, -123, -122, -121, -119, -118, -116, -115, -114,
+    -112, -111, -109, -108, -107, -105, -104, -102, -101, -100, -98, -97, -95,
+    -94, -93, -91, -90, -88, -87, -86, -84, -83, -81, -80, -79, -77, -76, -74,
+    -73, -72, -70, -69, -67, -66, -64, -63, -62, -60, -59, -57, -56, -55, -53,
+    -52, -50, -49, -48, -46, -45, -43, -42, -41, -39, -38, -36, -35, -34, -32,
+    -31, -29, -28, -27, -25, -24, -22, -21, -20, -18, -17, -15, -14, -13, -11,
+    -10, -8, -7, -6, -4, -3, -1, 0, 1, 3, 4, 6, 7, 8, 10, 11, 13, 14, 15, 17,
+    18, 20, 21, 22, 24, 25, 27, 28, 29, 31, 32, 34, 35, 36, 38, 39, 41, 42, 43,
+    45, 46, 48, 49, 50, 52, 53, 55, 56, 57, 59, 60, 62, 63, 64, 66, 67, 69, 70,
+    72, 73, 74, 76, 77, 79, 80, 81, 83, 84, 86, 87, 88, 90, 91, 93, 94, 95, 97,
+    98, 100, 101, 102, 104, 105, 107, 108, 109, 111, 112, 114, 115, 116, 118,
+    119, 121, 122, 123, 125, 126, 128, 129, 130, 132, 133, 135, 136, 137, 139,
+    140, 142, 143, 144, 146, 147, 149, 150, 151, 153, 154, 156, 157, 158, 160,
+    161, 163, 164, 165, 167, 168, 170, 171, 172, 174, 175, 177, 178,
+];
+JpegData.CRG = [
+    5990656, 5943854, 5897052, 5850250, 5803448, 5756646, 5709844, 5663042,
+    5616240, 5569438, 5522636, 5475834, 5429032, 5382230, 5335428, 5288626,
+    5241824, 5195022, 5148220, 5101418, 5054616, 5007814, 4961012, 4914210,
+    4867408, 4820606, 4773804, 4727002, 4680200, 4633398, 4586596, 4539794,
+    4492992, 4446190, 4399388, 4352586, 4305784, 4258982, 4212180, 4165378,
+    4118576, 4071774, 4024972, 3978170, 3931368, 3884566, 3837764, 3790962,
+    3744160, 3697358, 3650556, 3603754, 3556952, 3510150, 3463348, 3416546,
+    3369744, 3322942, 3276140, 3229338, 3182536, 3135734, 3088932, 3042130,
+    2995328, 2948526, 2901724, 2854922, 2808120, 2761318, 2714516, 2667714,
+    2620912, 2574110, 2527308, 2480506, 2433704, 2386902, 2340100, 2293298,
+    2246496, 2199694, 2152892, 2106090, 2059288, 2012486, 1965684, 1918882,
+    1872080, 1825278, 1778476, 1731674, 1684872, 1638070, 1591268, 1544466,
+    1497664, 1450862, 1404060, 1357258, 1310456, 1263654, 1216852, 1170050,
+    1123248, 1076446, 1029644, 982842, 936040, 889238, 842436, 795634, 748832,
+    702030, 655228, 608426, 561624, 514822, 468020, 421218, 374416, 327614,
+    280812, 234010, 187208, 140406, 93604, 46802, 0, -46802, -93604, -140406,
+    -187208, -234010, -280812, -327614, -374416, -421218, -468020, -514822,
+    -561624, -608426, -655228, -702030, -748832, -795634, -842436, -889238,
+    -936040, -982842, -1029644, -1076446, -1123248, -1170050, -1216852,
+    -1263654, -1310456, -1357258, -1404060, -1450862, -1497664, -1544466,
+    -1591268, -1638070, -1684872, -1731674, -1778476, -1825278, -1872080,
+    -1918882, -1965684, -2012486, -2059288, -2106090, -2152892, -2199694,
+    -2246496, -2293298, -2340100, -2386902, -2433704, -2480506, -2527308,
+    -2574110, -2620912, -2667714, -2714516, -2761318, -2808120, -2854922,
+    -2901724, -2948526, -2995328, -3042130, -3088932, -3135734, -3182536,
+    -3229338, -3276140, -3322942, -3369744, -3416546, -3463348, -3510150,
+    -3556952, -3603754, -3650556, -3697358, -3744160, -3790962, -3837764,
+    -3884566, -3931368, -3978170, -4024972, -4071774, -4118576, -4165378,
+    -4212180, -4258982, -4305784, -4352586, -4399388, -4446190, -4492992,
+    -4539794, -4586596, -4633398, -4680200, -4727002, -4773804, -4820606,
+    -4867408, -4914210, -4961012, -5007814, -5054616, -5101418, -5148220,
+    -5195022, -5241824, -5288626, -5335428, -5382230, -5429032, -5475834,
+    -5522636, -5569438, -5616240, -5663042, -5709844, -5756646, -5803448,
+    -5850250, -5897052, -5943854,
+];
+JpegData.CBG = [
+    2919680, 2897126, 2874572, 2852018, 2829464, 2806910, 2784356, 2761802,
+    2739248, 2716694, 2694140, 2671586, 2649032, 2626478, 2603924, 2581370,
+    2558816, 2536262, 2513708, 2491154, 2468600, 2446046, 2423492, 2400938,
+    2378384, 2355830, 2333276, 2310722, 2288168, 2265614, 2243060, 2220506,
+    2197952, 2175398, 2152844, 2130290, 2107736, 2085182, 2062628, 2040074,
+    2017520, 1994966, 1972412, 1949858, 1927304, 1904750, 1882196, 1859642,
+    1837088, 1814534, 1791980, 1769426, 1746872, 1724318, 1701764, 1679210,
+    1656656, 1634102, 1611548, 1588994, 1566440, 1543886, 1521332, 1498778,
+    1476224, 1453670, 1431116, 1408562, 1386008, 1363454, 1340900, 1318346,
+    1295792, 1273238, 1250684, 1228130, 1205576, 1183022, 1160468, 1137914,
+    1115360, 1092806, 1070252, 1047698, 1025144, 1002590, 980036, 957482,
+    934928, 912374, 889820, 867266, 844712, 822158, 799604, 777050, 754496,
+    731942, 709388, 686834, 664280, 641726, 619172, 596618, 574064, 551510,
+    528956, 506402, 483848, 461294, 438740, 416186, 393632, 371078, 348524,
+    325970, 303416, 280862, 258308, 235754, 213200, 190646, 168092, 145538,
+    122984, 100430, 77876, 55322, 32768, 10214, -12340, -34894, -57448, -80002,
+    -102556, -125110, -147664, -170218, -192772, -215326, -237880, -260434,
+    -282988, -305542, -328096, -350650, -373204, -395758, -418312, -440866,
+    -463420, -485974, -508528, -531082, -553636, -576190, -598744, -621298,
+    -643852, -666406, -688960, -711514, -734068, -756622, -779176, -801730,
+    -824284, -846838, -869392, -891946, -914500, -937054, -959608, -982162,
+    -1004716, -1027270, -1049824, -1072378, -1094932, -1117486, -1140040,
+    -1162594, -1185148, -1207702, -1230256, -1252810, -1275364, -1297918,
+    -1320472, -1343026, -1365580, -1388134, -1410688, -1433242, -1455796,
+    -1478350, -1500904, -1523458, -1546012, -1568566, -1591120, -1613674,
+    -1636228, -1658782, -1681336, -1703890, -1726444, -1748998, -1771552,
+    -1794106, -1816660, -1839214, -1861768, -1884322, -1906876, -1929430,
+    -1951984, -1974538, -1997092, -2019646, -2042200, -2064754, -2087308,
+    -2109862, -2132416, -2154970, -2177524, -2200078, -2222632, -2245186,
+    -2267740, -2290294, -2312848, -2335402, -2357956, -2380510, -2403064,
+    -2425618, -2448172, -2470726, -2493280, -2515834, -2538388, -2560942,
+    -2583496, -2606050, -2628604, -2651158, -2673712, -2696266, -2718820,
+    -2741374, -2763928, -2786482, -2809036, -2831590,
+];
+JpegData.CBB = [
+    -227, -225, -223, -222, -220, -218, -216, -214, -213, -211, -209, -207,
+    -206, -204, -202, -200, -198, -197, -195, -193, -191, -190, -188, -186,
+    -184, -183, -181, -179, -177, -175, -174, -172, -170, -168, -167, -165,
+    -163, -161, -159, -158, -156, -154, -152, -151, -149, -147, -145, -144,
+    -142, -140, -138, -136, -135, -133, -131, -129, -128, -126, -124, -122,
+    -120, -119, -117, -115, -113, -112, -110, -108, -106, -105, -103, -101, -99,
+    -97, -96, -94, -92, -90, -89, -87, -85, -83, -82, -80, -78, -76, -74, -73,
+    -71, -69, -67, -66, -64, -62, -60, -58, -57, -55, -53, -51, -50, -48, -46,
+    -44, -43, -41, -39, -37, -35, -34, -32, -30, -28, -27, -25, -23, -21, -19,
+    -18, -16, -14, -12, -11, -9, -7, -5, -4, -2, 0, 2, 4, 5, 7, 9, 11, 12, 14,
+    16, 18, 19, 21, 23, 25, 27, 28, 30, 32, 34, 35, 37, 39, 41, 43, 44, 46, 48,
+    50, 51, 53, 55, 57, 58, 60, 62, 64, 66, 67, 69, 71, 73, 74, 76, 78, 80, 82,
+    83, 85, 87, 89, 90, 92, 94, 96, 97, 99, 101, 103, 105, 106, 108, 110, 112,
+    113, 115, 117, 119, 120, 122, 124, 126, 128, 129, 131, 133, 135, 136, 138,
+    140, 142, 144, 145, 147, 149, 151, 152, 154, 156, 158, 159, 161, 163, 165,
+    167, 168, 170, 172, 174, 175, 177, 179, 181, 183, 184, 186, 188, 190, 191,
+    193, 195, 197, 198, 200, 202, 204, 206, 207, 209, 211, 213, 214, 216, 218,
+    220, 222, 223, 225,
+];
+//# sourceMappingURL=jpeg-data.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/formats/jpeg-decoder.js
+
+
+
+
+
+class JpegDecoder {
+    get numFrames() {
+        return this.info !== undefined ? this.info.numFrames : 0;
+    }
+    isValidFile(bytes) {
+        return new JpegData().validate(bytes);
+    }
+    startDecode(bytes) {
+        this.input = new InputBuffer({
+            buffer: bytes,
+            bigEndian: true,
+        });
+        this.info = new JpegData().readInfo(bytes);
+        return this.info;
+    }
+    decodeFrame(_) {
+        if (this.input === undefined) {
+            return undefined;
+        }
+        const jpeg = new JpegData();
+        jpeg.read(this.input.buffer);
+        if (jpeg.frames.length !== 1) {
+            throw new ImageError('only single frame JPEGs supported');
+        }
+        return jpeg.getImage();
+    }
+    decodeHdrFrame(frame) {
+        const img = this.decodeFrame(frame);
+        if (img === undefined) {
+            return undefined;
+        }
+        return HdrImage.fromImage(img);
+    }
+    decodeAnimation(bytes) {
+        const image = this.decodeImage(bytes);
+        if (image === undefined) {
+            return undefined;
+        }
+        const animation = new FrameAnimation({
+            width: image.width,
+            height: image.height,
+        });
+        animation.addFrame(image);
+        return animation;
+    }
+    decodeImage(bytes, _) {
+        const jpeg = new JpegData();
+        jpeg.read(bytes);
+        if (jpeg.frames.length !== 1) {
+            throw new ImageError('only single frame JPEGs supported');
+        }
+        return jpeg.getImage();
+    }
+    decodeHdrImage(bytes, frame = 0) {
+        const img = this.decodeImage(bytes, frame);
+        if (img === undefined) {
+            return undefined;
+        }
+        return HdrImage.fromImage(img);
+    }
+}
+//# sourceMappingURL=jpeg-decoder.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/formats/jpeg-encoder.js
+
+
+
+class JpegEncoder {
+    constructor(quality = 100) {
+        this.tableY = new Uint8Array(64);
+        this.tableUV = new Uint8Array(64);
+        this.ftableY = new Float32Array(64);
+        this.ftableUV = new Float32Array(64);
+        this.bitcode = new Array(65535).fill(undefined);
+        this.category = new Array(65535).fill(undefined);
+        this.outputfDCTQuant = new Array(64).fill(undefined);
+        this.DU = new Array(64).fill(undefined);
+        this.YDU = new Float32Array(64);
+        this.UDU = new Float32Array(64);
+        this.VDU = new Float32Array(64);
+        this.tableRGBYUV = new Int32Array(2048);
+        this.byteNew = 0;
+        this.bytePos = 7;
+        this._supportsAnimation = false;
+        this.initHuffmanTable();
+        this.initCategoryNumber();
+        this.initRGBYUVTable();
+        this.setQuality(quality);
+    }
+    get supportsAnimation() {
+        return this._supportsAnimation;
+    }
+    static computeHuffmanTable(nrcodes, stdTable) {
+        let codevalue = 0;
+        let posInTable = 0;
+        const HT = new Array();
+        for (let k = 1; k <= 16; k++) {
+            for (let j = 1; j <= nrcodes[k]; j++) {
+                const index = stdTable[posInTable];
+                if (HT.length <= index) {
+                    HT.length = index + 1;
+                }
+                HT[index] = [codevalue, k];
+                posInTable++;
+                codevalue++;
+            }
+            codevalue *= 2;
+        }
+        return HT;
+    }
+    static writeMarker(fp, marker) {
+        fp.writeByte(0xff);
+        fp.writeByte(marker & 0xff);
+    }
+    static writeAPP0(out) {
+        JpegEncoder.writeMarker(out, Jpeg.M_APP0);
+        out.writeUint16(16);
+        out.writeByte(0x4a);
+        out.writeByte(0x46);
+        out.writeByte(0x49);
+        out.writeByte(0x46);
+        out.writeByte(0);
+        out.writeByte(1);
+        out.writeByte(1);
+        out.writeByte(0);
+        out.writeUint16(1);
+        out.writeUint16(1);
+        out.writeByte(0);
+        out.writeByte(0);
+    }
+    static writeAPP1(out, exif) {
+        if (exif.isEmpty) {
+            return;
+        }
+        const exifData = new OutputBuffer();
+        exif.write(exifData);
+        const exifBytes = exifData.getBytes();
+        this.writeMarker(out, Jpeg.M_APP1);
+        out.writeUint16(exifBytes.length + 8);
+        const exifSignature = 0x45786966;
+        out.writeUint32(exifSignature);
+        out.writeUint16(0);
+        out.writeBytes(exifBytes);
+    }
+    static writeSOF0(out, width, height) {
+        JpegEncoder.writeMarker(out, Jpeg.M_SOF0);
+        out.writeUint16(17);
+        out.writeByte(8);
+        out.writeUint16(height);
+        out.writeUint16(width);
+        out.writeByte(3);
+        out.writeByte(1);
+        out.writeByte(0x11);
+        out.writeByte(0);
+        out.writeByte(2);
+        out.writeByte(0x11);
+        out.writeByte(1);
+        out.writeByte(3);
+        out.writeByte(0x11);
+        out.writeByte(1);
+    }
+    static writeSOS(out) {
+        JpegEncoder.writeMarker(out, Jpeg.M_SOS);
+        out.writeUint16(12);
+        out.writeByte(3);
+        out.writeByte(1);
+        out.writeByte(0);
+        out.writeByte(2);
+        out.writeByte(0x11);
+        out.writeByte(3);
+        out.writeByte(0x11);
+        out.writeByte(0);
+        out.writeByte(0x3f);
+        out.writeByte(0);
+    }
+    static writeDHT(out) {
+        JpegEncoder.writeMarker(out, Jpeg.M_DHT);
+        out.writeUint16(0x01a2);
+        out.writeByte(0);
+        for (let i = 0; i < 16; i++) {
+            out.writeByte(JpegEncoder.STD_DC_LUMINANCE_NR_CODES[i + 1]);
+        }
+        for (let j = 0; j <= 11; j++) {
+            out.writeByte(JpegEncoder.STD_DC_LUMINANCE_VALUES[j]);
+        }
+        out.writeByte(0x10);
+        for (let k = 0; k < 16; k++) {
+            out.writeByte(JpegEncoder.STD_AC_LUMINANCE_NR_CODES[k + 1]);
+        }
+        for (let l = 0; l <= 161; l++) {
+            out.writeByte(JpegEncoder.STD_AC_LUMINANCE_VALUES[l]);
+        }
+        out.writeByte(1);
+        for (let m = 0; m < 16; m++) {
+            out.writeByte(JpegEncoder.STD_DC_CHROMINANCE_NR_CODES[m + 1]);
+        }
+        for (let n = 0; n <= 11; n++) {
+            out.writeByte(JpegEncoder.STD_DC_CHROMINANCE_VALUES[n]);
+        }
+        out.writeByte(0x11);
+        for (let o = 0; o < 16; o++) {
+            out.writeByte(JpegEncoder.STD_AC_CHROMINANCE_NR_CODES[o + 1]);
+        }
+        for (let p = 0; p <= 161; p++) {
+            out.writeByte(JpegEncoder.STD_AC_CHROMINANCE_VALUES[p]);
+        }
+    }
+    initHuffmanTable() {
+        this.htYDC = JpegEncoder.computeHuffmanTable(JpegEncoder.STD_DC_LUMINANCE_NR_CODES, JpegEncoder.STD_DC_LUMINANCE_VALUES);
+        this.htUVDC = JpegEncoder.computeHuffmanTable(JpegEncoder.STD_DC_CHROMINANCE_NR_CODES, JpegEncoder.STD_DC_CHROMINANCE_VALUES);
+        this.htYAC = JpegEncoder.computeHuffmanTable(JpegEncoder.STD_AC_LUMINANCE_NR_CODES, JpegEncoder.STD_AC_LUMINANCE_VALUES);
+        this.htUVAC = JpegEncoder.computeHuffmanTable(JpegEncoder.STD_AC_CHROMINANCE_NR_CODES, JpegEncoder.STD_AC_CHROMINANCE_VALUES);
+    }
+    initCategoryNumber() {
+        let nrlower = 1;
+        let nrupper = 2;
+        for (let cat = 1; cat <= 15; cat++) {
+            for (let nr = nrlower; nr < nrupper; nr++) {
+                this.category[32767 + nr] = cat;
+                this.bitcode[32767 + nr] = [nr, cat];
+            }
+            for (let nrneg = -(nrupper - 1); nrneg <= -nrlower; nrneg++) {
+                this.category[32767 + nrneg] = cat;
+                this.bitcode[32767 + nrneg] = [nrupper - 1 + nrneg, cat];
+            }
+            nrlower <<= 1;
+            nrupper <<= 1;
+        }
+    }
+    initRGBYUVTable() {
+        for (let i = 0; i < 256; i++) {
+            this.tableRGBYUV[i] = 19595 * i;
+            this.tableRGBYUV[i + 256] = 38470 * i;
+            this.tableRGBYUV[i + 512] = 7471 * i + 0x8000;
+            this.tableRGBYUV[i + 768] = -11059 * i;
+            this.tableRGBYUV[i + 1024] = -21709 * i;
+            this.tableRGBYUV[i + 1280] = 32768 * i + 0x807fff;
+            this.tableRGBYUV[i + 1536] = -27439 * i;
+            this.tableRGBYUV[i + 1792] = -5329 * i;
+        }
+    }
+    setQuality(quality) {
+        const q = MathOperators.clampInt(quality, 1, 100);
+        if (this.currentQuality === q) {
+            return;
+        }
+        let sf = 0;
+        if (q < 50) {
+            sf = Math.floor(5000 / q);
+        }
+        else {
+            sf = Math.floor(200 - q * 2);
+        }
+        this.initQuantTables(sf);
+        this.currentQuality = q;
+    }
+    initQuantTables(sf) {
+        const YQT = [
+            16, 11, 10, 16, 24, 40, 51, 61, 12, 12, 14, 19, 26, 58, 60, 55, 14, 13,
+            16, 24, 40, 57, 69, 56, 14, 17, 22, 29, 51, 87, 80, 62, 18, 22, 37, 56,
+            68, 109, 103, 77, 24, 35, 55, 64, 81, 104, 113, 92, 49, 64, 78, 87, 103,
+            121, 120, 101, 72, 92, 95, 98, 112, 100, 103, 99,
+        ];
+        for (let i = 0; i < 64; i++) {
+            let t = Math.floor((YQT[i] * sf + 50) / 100);
+            if (t < 1) {
+                t = 1;
+            }
+            else if (t > 255) {
+                t = 255;
+            }
+            this.tableY[JpegEncoder.ZIGZAG[i]] = t;
+        }
+        const UVQT = [
+            17, 18, 24, 47, 99, 99, 99, 99, 18, 21, 26, 66, 99, 99, 99, 99, 24, 26,
+            56, 99, 99, 99, 99, 99, 47, 66, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99,
+            99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99,
+            99, 99, 99, 99, 99, 99, 99, 99, 99, 99,
+        ];
+        for (let j = 0; j < 64; j++) {
+            let u = Math.floor((UVQT[j] * sf + 50) / 100);
+            if (u < 1) {
+                u = 1;
+            }
+            else if (u > 255) {
+                u = 255;
+            }
+            this.tableUV[JpegEncoder.ZIGZAG[j]] = u;
+        }
+        const aasf = [
+            1.0, 1.387039845, 1.306562965, 1.175875602, 1.0, 0.785694958, 0.5411961,
+            0.275899379,
+        ];
+        let k = 0;
+        for (let row = 0; row < 8; row++) {
+            for (let col = 0; col < 8; col++) {
+                this.ftableY[k] =
+                    1.0 /
+                        (this.tableY[JpegEncoder.ZIGZAG[k]] * aasf[row] * aasf[col] * 8.0);
+                this.ftableUV[k] =
+                    1.0 /
+                        (this.tableUV[JpegEncoder.ZIGZAG[k]] * aasf[row] * aasf[col] * 8.0);
+                k++;
+            }
+        }
+    }
+    fDCTQuant(data, fdtbl) {
+        let dataOff = 0;
+        const I8 = 8;
+        const I64 = 64;
+        for (let i = 0; i < I8; ++i) {
+            const d0 = data[dataOff];
+            const d1 = data[dataOff + 1];
+            const d2 = data[dataOff + 2];
+            const d3 = data[dataOff + 3];
+            const d4 = data[dataOff + 4];
+            const d5 = data[dataOff + 5];
+            const d6 = data[dataOff + 6];
+            const d7 = data[dataOff + 7];
+            const tmp0 = d0 + d7;
+            const tmp7 = d0 - d7;
+            const tmp1 = d1 + d6;
+            const tmp6 = d1 - d6;
+            const tmp2 = d2 + d5;
+            const tmp5 = d2 - d5;
+            const tmp3 = d3 + d4;
+            const tmp4 = d3 - d4;
+            let tmp10 = tmp0 + tmp3;
+            const tmp13 = tmp0 - tmp3;
+            let tmp11 = tmp1 + tmp2;
+            let tmp12 = tmp1 - tmp2;
+            data[dataOff] = tmp10 + tmp11;
+            data[dataOff + 4] = tmp10 - tmp11;
+            const z1 = (tmp12 + tmp13) * 0.707106781;
+            data[dataOff + 2] = tmp13 + z1;
+            data[dataOff + 6] = tmp13 - z1;
+            tmp10 = tmp4 + tmp5;
+            tmp11 = tmp5 + tmp6;
+            tmp12 = tmp6 + tmp7;
+            const z5 = (tmp10 - tmp12) * 0.382683433;
+            const z2 = 0.5411961 * tmp10 + z5;
+            const z4 = 1.306562965 * tmp12 + z5;
+            const z3 = tmp11 * 0.707106781;
+            const z11 = tmp7 + z3;
+            const z13 = tmp7 - z3;
+            data[dataOff + 5] = z13 + z2;
+            data[dataOff + 3] = z13 - z2;
+            data[dataOff + 1] = z11 + z4;
+            data[dataOff + 7] = z11 - z4;
+            dataOff += 8;
+        }
+        dataOff = 0;
+        for (let i = 0; i < I8; ++i) {
+            const d0 = data[dataOff];
+            const d1 = data[dataOff + 8];
+            const d2 = data[dataOff + 16];
+            const d3 = data[dataOff + 24];
+            const d4 = data[dataOff + 32];
+            const d5 = data[dataOff + 40];
+            const d6 = data[dataOff + 48];
+            const d7 = data[dataOff + 56];
+            const tmp0p2 = d0 + d7;
+            const tmp7p2 = d0 - d7;
+            const tmp1p2 = d1 + d6;
+            const tmp6p2 = d1 - d6;
+            const tmp2p2 = d2 + d5;
+            const tmp5p2 = d2 - d5;
+            const tmp3p2 = d3 + d4;
+            const tmp4p2 = d3 - d4;
+            let tmp10p2 = tmp0p2 + tmp3p2;
+            const tmp13p2 = tmp0p2 - tmp3p2;
+            let tmp11p2 = tmp1p2 + tmp2p2;
+            let tmp12p2 = tmp1p2 - tmp2p2;
+            data[dataOff] = tmp10p2 + tmp11p2;
+            data[dataOff + 32] = tmp10p2 - tmp11p2;
+            const z1p2 = (tmp12p2 + tmp13p2) * 0.707106781;
+            data[dataOff + 16] = tmp13p2 + z1p2;
+            data[dataOff + 48] = tmp13p2 - z1p2;
+            tmp10p2 = tmp4p2 + tmp5p2;
+            tmp11p2 = tmp5p2 + tmp6p2;
+            tmp12p2 = tmp6p2 + tmp7p2;
+            const z5p2 = (tmp10p2 - tmp12p2) * 0.382683433;
+            const z2p2 = 0.5411961 * tmp10p2 + z5p2;
+            const z4p2 = 1.306562965 * tmp12p2 + z5p2;
+            const z3p2 = tmp11p2 * 0.707106781;
+            const z11p2 = tmp7p2 + z3p2;
+            const z13p2 = tmp7p2 - z3p2;
+            data[dataOff + 40] = z13p2 + z2p2;
+            data[dataOff + 24] = z13p2 - z2p2;
+            data[dataOff + 8] = z11p2 + z4p2;
+            data[dataOff + 56] = z11p2 - z4p2;
+            dataOff++;
+        }
+        for (let i = 0; i < I64; ++i) {
+            const fDCTQuant = data[i] * fdtbl[i];
+            this.outputfDCTQuant[i] =
+                fDCTQuant > 0.0
+                    ? Math.trunc(fDCTQuant + 0.5)
+                    : Math.trunc(fDCTQuant - 0.5);
+        }
+        return this.outputfDCTQuant;
+    }
+    writeDQT(out) {
+        JpegEncoder.writeMarker(out, Jpeg.M_DQT);
+        out.writeUint16(132);
+        out.writeByte(0);
+        for (let i = 0; i < 64; i++) {
+            out.writeByte(this.tableY[i]);
+        }
+        out.writeByte(1);
+        for (let j = 0; j < 64; j++) {
+            out.writeByte(this.tableUV[j]);
+        }
+    }
+    writeBits(out, bits) {
+        const value = bits[0];
+        let posval = bits[1] - 1;
+        while (posval >= 0) {
+            if ((value & (1 << posval)) !== 0) {
+                this.byteNew |= 1 << this.bytePos;
+            }
+            posval--;
+            this.bytePos--;
+            if (this.bytePos < 0) {
+                if (this.byteNew === 0xff) {
+                    out.writeByte(0xff);
+                    out.writeByte(0);
+                }
+                else {
+                    out.writeByte(this.byteNew);
+                }
+                this.bytePos = 7;
+                this.byteNew = 0;
+            }
+        }
+    }
+    resetBits() {
+        this.byteNew = 0;
+        this.bytePos = 7;
+    }
+    processDU(out, CDU, fdtbl, DC, HTAC, HTDC) {
+        const EOB = HTAC[0x00];
+        const M16zeroes = HTAC[0xf0];
+        const I16 = 16;
+        const I63 = 63;
+        const I64 = 64;
+        const DU_DCT = this.fDCTQuant(CDU, fdtbl);
+        let dc = DC;
+        let pos = 0;
+        for (let j = 0; j < I64; ++j) {
+            this.DU[JpegEncoder.ZIGZAG[j]] = DU_DCT[j];
+        }
+        const Diff = this.DU[0] - dc;
+        dc = this.DU[0];
+        if (Diff === 0) {
+            this.writeBits(out, HTDC[0]);
+        }
+        else {
+            pos = 32767 + Diff;
+            this.writeBits(out, HTDC[this.category[pos]]);
+            this.writeBits(out, this.bitcode[pos]);
+        }
+        let end0pos = 63;
+        for (; end0pos > 0 && this.DU[end0pos] === 0; end0pos--) { }
+        if (end0pos === 0) {
+            this.writeBits(out, EOB);
+            return dc;
+        }
+        let i = 1;
+        while (i <= end0pos) {
+            const startpos = i;
+            for (; this.DU[i] === 0 && i <= end0pos; ++i) { }
+            let nrzeroes = i - startpos;
+            if (nrzeroes >= I16) {
+                const lng = nrzeroes >> 4;
+                for (let nrmarker = 1; nrmarker <= lng; ++nrmarker) {
+                    this.writeBits(out, M16zeroes);
+                }
+                nrzeroes &= 0xf;
+            }
+            pos = 32767 + this.DU[i];
+            this.writeBits(out, HTAC[(nrzeroes << 4) + this.category[pos]]);
+            this.writeBits(out, this.bitcode[pos]);
+            i++;
+        }
+        if (end0pos !== I63) {
+            this.writeBits(out, EOB);
+        }
+        return dc;
+    }
+    encodeImage(image) {
+        const fp = new OutputBuffer({
+            bigEndian: true,
+        });
+        JpegEncoder.writeMarker(fp, Jpeg.M_SOI);
+        JpegEncoder.writeAPP0(fp);
+        JpegEncoder.writeAPP1(fp, image.exifData);
+        this.writeDQT(fp);
+        JpegEncoder.writeSOF0(fp, image.width, image.height);
+        JpegEncoder.writeDHT(fp);
+        JpegEncoder.writeSOS(fp);
+        let DCY = 0;
+        let DCU = 0;
+        let DCV = 0;
+        this.resetBits();
+        const width = image.width;
+        const height = image.height;
+        const imageData = image.getBytes();
+        const quadWidth = width * 4;
+        let y = 0;
+        while (y < height) {
+            let x = 0;
+            while (x < quadWidth) {
+                const start = quadWidth * y + x;
+                for (let pos = 0; pos < 64; pos++) {
+                    const row = pos >> 3;
+                    const col = (pos & 7) * 4;
+                    let p = start + row * quadWidth + col;
+                    if (y + row >= height) {
+                        p -= quadWidth * (y + 1 + row - height);
+                    }
+                    if (x + col >= quadWidth) {
+                        p -= x + col - quadWidth + 4;
+                    }
+                    const r = imageData[p++];
+                    const g = imageData[p++];
+                    const b = imageData[p++];
+                    this.YDU[pos] =
+                        ((this.tableRGBYUV[r] +
+                            this.tableRGBYUV[g + 256] +
+                            this.tableRGBYUV[b + 512]) >>
+                            16) -
+                            128.0;
+                    this.UDU[pos] =
+                        ((this.tableRGBYUV[r + 768] +
+                            this.tableRGBYUV[g + 1024] +
+                            this.tableRGBYUV[b + 1280]) >>
+                            16) -
+                            128.0;
+                    this.VDU[pos] =
+                        ((this.tableRGBYUV[r + 1280] +
+                            this.tableRGBYUV[g + 1536] +
+                            this.tableRGBYUV[b + 1792]) >>
+                            16) -
+                            128.0;
+                }
+                DCY = this.processDU(fp, this.YDU, this.ftableY, DCY, this.htYAC, this.htYDC);
+                DCU = this.processDU(fp, this.UDU, this.ftableUV, DCU, this.htUVAC, this.htUVDC);
+                DCV = this.processDU(fp, this.VDU, this.ftableUV, DCV, this.htUVAC, this.htUVDC);
+                x += 32;
+            }
+            y += 8;
+        }
+        if (this.bytePos >= 0) {
+            const fillBits = [(1 << (this.bytePos + 1)) - 1, this.bytePos + 1];
+            this.writeBits(fp, fillBits);
+        }
+        JpegEncoder.writeMarker(fp, Jpeg.M_EOI);
+        return fp.getBytes();
+    }
+    encodeAnimation(_) {
+        return undefined;
+    }
+}
+JpegEncoder.ZIGZAG = [
+    0, 1, 5, 6, 14, 15, 27, 28, 2, 4, 7, 13, 16, 26, 29, 42, 3, 8, 12, 17, 25,
+    30, 41, 43, 9, 11, 18, 24, 31, 40, 44, 53, 10, 19, 23, 32, 39, 45, 52, 54,
+    20, 22, 33, 38, 46, 51, 55, 60, 21, 34, 37, 47, 50, 56, 59, 61, 35, 36, 48,
+    49, 57, 58, 62, 63,
+];
+JpegEncoder.STD_DC_LUMINANCE_NR_CODES = [
+    0, 0, 1, 5, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0,
+];
+JpegEncoder.STD_DC_LUMINANCE_VALUES = [
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
+];
+JpegEncoder.STD_AC_LUMINANCE_NR_CODES = [
+    0, 0, 2, 1, 3, 3, 2, 4, 3, 5, 5, 4, 4, 0, 0, 1, 0x7d,
+];
+JpegEncoder.STD_AC_LUMINANCE_VALUES = [
+    0x01, 0x02, 0x03, 0x00, 0x04, 0x11, 0x05, 0x12, 0x21, 0x31, 0x41, 0x06,
+    0x13, 0x51, 0x61, 0x07, 0x22, 0x71, 0x14, 0x32, 0x81, 0x91, 0xa1, 0x08,
+    0x23, 0x42, 0xb1, 0xc1, 0x15, 0x52, 0xd1, 0xf0, 0x24, 0x33, 0x62, 0x72,
+    0x82, 0x09, 0x0a, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x25, 0x26, 0x27, 0x28,
+    0x29, 0x2a, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3a, 0x43, 0x44, 0x45,
+    0x46, 0x47, 0x48, 0x49, 0x4a, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59,
+    0x5a, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69, 0x6a, 0x73, 0x74, 0x75,
+    0x76, 0x77, 0x78, 0x79, 0x7a, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89,
+    0x8a, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9a, 0xa2, 0xa3,
+    0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xb2, 0xb3, 0xb4, 0xb5, 0xb6,
+    0xb7, 0xb8, 0xb9, 0xba, 0xc2, 0xc3, 0xc4, 0xc5, 0xc6, 0xc7, 0xc8, 0xc9,
+    0xca, 0xd2, 0xd3, 0xd4, 0xd5, 0xd6, 0xd7, 0xd8, 0xd9, 0xda, 0xe1, 0xe2,
+    0xe3, 0xe4, 0xe5, 0xe6, 0xe7, 0xe8, 0xe9, 0xea, 0xf1, 0xf2, 0xf3, 0xf4,
+    0xf5, 0xf6, 0xf7, 0xf8, 0xf9, 0xfa,
+];
+JpegEncoder.STD_DC_CHROMINANCE_NR_CODES = [
+    0, 0, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0,
+];
+JpegEncoder.STD_DC_CHROMINANCE_VALUES = [
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
+];
+JpegEncoder.STD_AC_CHROMINANCE_NR_CODES = [
+    0, 0, 2, 1, 2, 4, 4, 3, 4, 7, 5, 4, 4, 0, 1, 2, 0x77,
+];
+JpegEncoder.STD_AC_CHROMINANCE_VALUES = [
+    0x00, 0x01, 0x02, 0x03, 0x11, 0x04, 0x05, 0x21, 0x31, 0x06, 0x12, 0x41,
+    0x51, 0x07, 0x61, 0x71, 0x13, 0x22, 0x32, 0x81, 0x08, 0x14, 0x42, 0x91,
+    0xa1, 0xb1, 0xc1, 0x09, 0x23, 0x33, 0x52, 0xf0, 0x15, 0x62, 0x72, 0xd1,
+    0x0a, 0x16, 0x24, 0x34, 0xe1, 0x25, 0xf1, 0x17, 0x18, 0x19, 0x1a, 0x26,
+    0x27, 0x28, 0x29, 0x2a, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3a, 0x43, 0x44,
+    0x45, 0x46, 0x47, 0x48, 0x49, 0x4a, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58,
+    0x59, 0x5a, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69, 0x6a, 0x73, 0x74,
+    0x75, 0x76, 0x77, 0x78, 0x79, 0x7a, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87,
+    0x88, 0x89, 0x8a, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9a,
+    0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xb2, 0xb3, 0xb4,
+    0xb5, 0xb6, 0xb7, 0xb8, 0xb9, 0xba, 0xc2, 0xc3, 0xc4, 0xc5, 0xc6, 0xc7,
+    0xc8, 0xc9, 0xca, 0xd2, 0xd3, 0xd4, 0xd5, 0xd6, 0xd7, 0xd8, 0xd9, 0xda,
+    0xe2, 0xe3, 0xe4, 0xe5, 0xe6, 0xe7, 0xe8, 0xe9, 0xea, 0xf2, 0xf3, 0xf4,
+    0xf5, 0xf6, 0xf7, 0xf8, 0xf9, 0xfa,
+];
+//# sourceMappingURL=jpeg-encoder.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/formats/tga/tga-info.js
+class TgaInfo {
+    constructor(options) {
+        var _a, _b, _c, _d;
+        this._width = 0;
+        this._height = 0;
+        this._backgroundColor = 0xffffffff;
+        this._numFrames = 1;
+        this._imageOffset = undefined;
+        this._bitsPerPixel = undefined;
+        this._width = (_a = options === null || options === void 0 ? void 0 : options.width) !== null && _a !== void 0 ? _a : 0;
+        this._height = (_b = options === null || options === void 0 ? void 0 : options.height) !== null && _b !== void 0 ? _b : 0;
+        this._imageOffset = (_c = options === null || options === void 0 ? void 0 : options.imageOffset) !== null && _c !== void 0 ? _c : undefined;
+        this._bitsPerPixel = (_d = options === null || options === void 0 ? void 0 : options.bitsPerPixel) !== null && _d !== void 0 ? _d : undefined;
+    }
+    get width() {
+        return this._width;
+    }
+    get height() {
+        return this._height;
+    }
+    get backgroundColor() {
+        return this._backgroundColor;
+    }
+    get numFrames() {
+        return this._numFrames;
+    }
+    get imageOffset() {
+        return this._imageOffset;
+    }
+    get bitsPerPixel() {
+        return this._bitsPerPixel;
+    }
+}
+//# sourceMappingURL=tga-info.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/formats/tga-decoder.js
+
+
+
+
+
+
+
+class TgaDecoder {
+    constructor() {
+        this.info = undefined;
+        this.input = undefined;
+    }
+    get numFrames() {
+        return this.info !== undefined ? 1 : 0;
+    }
+    isValidFile(bytes) {
+        const input = new InputBuffer({
+            buffer: bytes,
+            bigEndian: true,
+        });
+        const header = input.readBytes(18);
+        if (header.getByte(2) !== 2) {
+            return false;
+        }
+        if (header.getByte(16) !== 24 && header.getByte(16) !== 32) {
+            return false;
+        }
+        return true;
+    }
+    startDecode(bytes) {
+        this.input = new InputBuffer({
+            buffer: bytes,
+            bigEndian: true,
+        });
+        const header = this.input.readBytes(18);
+        if (header.getByte(2) !== 2) {
+            return undefined;
+        }
+        if (header.getByte(16) !== 24 && header.getByte(16) !== 32) {
+            return undefined;
+        }
+        const width = (header.getByte(12) & 0xff) | ((header.getByte(13) & 0xff) << 8);
+        const height = (header.getByte(14) & 0xff) | ((header.getByte(15) & 0xff) << 8);
+        const imageOffset = this.input.offset;
+        const bitsPerPixel = header.getByte(16);
+        this.info = new TgaInfo({
+            width: width,
+            height: height,
+            imageOffset: imageOffset,
+            bitsPerPixel: bitsPerPixel,
+        });
+        return this.info;
+    }
+    decodeFrame(_frame) {
+        if (this.info === undefined || this.input === undefined) {
+            return undefined;
+        }
+        this.input.offset = this.info.imageOffset;
+        const image = new MemoryImage({
+            width: this.info.width,
+            height: this.info.height,
+            rgbChannelSet: RgbChannelSet.rgb,
+        });
+        for (let y = image.height - 1; y >= 0; --y) {
+            for (let x = 0; x < image.width; ++x) {
+                const b = this.input.readByte();
+                const g = this.input.readByte();
+                const r = this.input.readByte();
+                const a = this.info.bitsPerPixel === 32 ? this.input.readByte() : 255;
+                image.setPixel(x, y, color_Color.getColor(r, g, b, a));
+            }
+        }
+        return image;
+    }
+    decodeHdrFrame(frame) {
+        const img = this.decodeFrame(frame);
+        if (img === undefined) {
+            return undefined;
+        }
+        return HdrImage.fromImage(img);
+    }
+    decodeAnimation(bytes) {
+        const image = this.decodeImage(bytes);
+        if (image === undefined) {
+            return undefined;
+        }
+        const animation = new FrameAnimation({
+            width: image.width,
+            height: image.height,
+        });
+        animation.addFrame(image);
+        return animation;
+    }
+    decodeImage(bytes, frame = 0) {
+        if (this.startDecode(bytes) === undefined) {
+            return undefined;
+        }
+        return this.decodeFrame(frame);
+    }
+    decodeHdrImage(bytes, frame) {
+        const img = this.decodeImage(bytes, frame);
+        if (img === undefined) {
+            return undefined;
+        }
+        return HdrImage.fromImage(img);
+    }
+}
+//# sourceMappingURL=tga-decoder.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/formats/tga-encoder.js
+
+
+
+class TgaEncoder {
+    constructor() {
+        this._supportsAnimation = false;
+    }
+    get supportsAnimation() {
+        return this._supportsAnimation;
+    }
+    encodeImage(image) {
+        const out = new OutputBuffer({
+            bigEndian: true,
+        });
+        const header = new Uint8Array(18);
+        header.fill(0);
+        header[2] = 2;
+        header[12] = image.width & 0xff;
+        header[13] = (image.width >> 8) & 0xff;
+        header[14] = image.height & 0xff;
+        header[15] = (image.height >> 8) & 0xff;
+        header[16] = image.rgbChannelSet === RgbChannelSet.rgb ? 24 : 32;
+        out.writeBytes(header);
+        for (let y = image.height - 1; y >= 0; --y) {
+            for (let x = 0; x < image.width; ++x) {
+                const c = image.getPixel(x, y);
+                out.writeByte(color_Color.getBlue(c));
+                out.writeByte(color_Color.getGreen(c));
+                out.writeByte(color_Color.getRed(c));
+                if (image.rgbChannelSet === RgbChannelSet.rgba) {
+                    out.writeByte(color_Color.getAlpha(c));
+                }
+            }
+        }
+        return out.getBytes();
+    }
+    encodeAnimation(_animation) {
+        return undefined;
+    }
+}
+//# sourceMappingURL=tga-encoder.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/formats/tiff/tiff-bit-reader.js
+class TiffBitReader {
+    constructor(input) {
+        this.bitBuffer = 0;
+        this.bitPosition = 0;
+        this.input = input;
+    }
+    readBits(numBits) {
+        let nBits = numBits;
+        if (nBits === 0) {
+            return 0;
+        }
+        if (this.bitPosition === 0) {
+            this.bitPosition = 8;
+            this.bitBuffer = this.input.readByte();
+        }
+        let value = 0;
+        while (nBits > this.bitPosition) {
+            value =
+                (value << this.bitPosition) +
+                    (this.bitBuffer & TiffBitReader.BITMASK[this.bitPosition]);
+            nBits -= this.bitPosition;
+            this.bitPosition = 8;
+            this.bitBuffer = this.input.readByte();
+        }
+        if (nBits > 0) {
+            if (this.bitPosition === 0) {
+                this.bitPosition = 8;
+                this.bitBuffer = this.input.readByte();
+            }
+            value =
+                (value << nBits) +
+                    ((this.bitBuffer >> (this.bitPosition - nBits)) &
+                        TiffBitReader.BITMASK[nBits]);
+            this.bitPosition -= nBits;
+        }
+        return value;
+    }
+    readByte() {
+        return this.readBits(8);
+    }
+    flushByte() {
+        return (this.bitPosition = 0);
+    }
+}
+TiffBitReader.BITMASK = [0, 1, 3, 7, 15, 31, 63, 127, 255];
+//# sourceMappingURL=tiff-bit-reader.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/formats/tiff/tiff-entry.js
+
+
+class TiffEntry {
+    constructor(options) {
+        this._tag = options.tag;
+        this._type = options.type;
+        this._numValues = options.numValues;
+        this._p = options.p;
+    }
+    get tag() {
+        return this._tag;
+    }
+    get type() {
+        return this._type;
+    }
+    get numValues() {
+        return this._numValues;
+    }
+    get valueOffset() {
+        return this._valueOffset;
+    }
+    set valueOffset(v) {
+        this._valueOffset = v;
+    }
+    get p() {
+        return this._p;
+    }
+    get isValid() {
+        return this._type < 13 && this._type > 0;
+    }
+    get typeSize() {
+        return this.isValid ? TiffEntry.SIZE_OF_TYPE[this._type] : 0;
+    }
+    get isString() {
+        return this._type === TiffEntry.TYPE_ASCII;
+    }
+    readValueInternal() {
+        switch (this._type) {
+            case TiffEntry.TYPE_BYTE:
+            case TiffEntry.TYPE_ASCII:
+                return this._p.readByte();
+            case TiffEntry.TYPE_SHORT:
+                return this._p.readUint16();
+            case TiffEntry.TYPE_LONG:
+                return this._p.readUint32();
+            case TiffEntry.TYPE_RATIONAL: {
+                const num = this._p.readUint32();
+                const den = this._p.readUint32();
+                if (den === 0) {
+                    return 0;
+                }
+                return Math.trunc(num / den);
+            }
+            case TiffEntry.TYPE_SBYTE:
+                throw new ImageError('Unhandled value type: SBYTE');
+            case TiffEntry.TYPE_UNDEFINED:
+                return this._p.readByte();
+            case TiffEntry.TYPE_SSHORT:
+                throw new ImageError('Unhandled value type: SSHORT');
+            case TiffEntry.TYPE_SLONG:
+                throw new ImageError('Unhandled value type: SLONG');
+            case TiffEntry.TYPE_SRATIONAL:
+                throw new ImageError('Unhandled value type: SRATIONAL');
+            case TiffEntry.TYPE_FLOAT:
+                throw new ImageError('Unhandled value type: FLOAT');
+            case TiffEntry.TYPE_DOUBLE:
+                throw new ImageError('Unhandled value type: DOUBLE');
+        }
+        return 0;
+    }
+    toString() {
+        if (TiffImage.TAG_NAME.has(this._tag)) {
+            return `${TiffImage.TAG_NAME.get(this._tag)}: $type $numValues`;
+        }
+        return `<${this._tag}>: ${this._type} ${this._numValues}`;
+    }
+    readValue() {
+        this._p.offset = this._valueOffset;
+        return this.readValueInternal();
+    }
+    readValues() {
+        this._p.offset = this._valueOffset;
+        const values = [];
+        for (let i = 0; i < this._numValues; ++i) {
+            values.push(this.readValueInternal());
+        }
+        return values;
+    }
+    readString() {
+        if (this._type !== TiffEntry.TYPE_ASCII) {
+            throw new ImageError('readString requires ASCII entity');
+        }
+        return String.fromCharCode(...this.readValues());
+    }
+    read() {
+        this._p.offset = this._valueOffset;
+        const values = [];
+        for (let i = 0; i < this._numValues; ++i) {
+            switch (this._type) {
+                case TiffEntry.TYPE_BYTE:
+                case TiffEntry.TYPE_ASCII:
+                    values.push(this._p.readByte());
+                    break;
+                case TiffEntry.TYPE_SHORT:
+                    values.push(this._p.readUint16());
+                    break;
+                case TiffEntry.TYPE_LONG:
+                    values.push(this._p.readUint32());
+                    break;
+                case TiffEntry.TYPE_RATIONAL: {
+                    const num = this._p.readUint32();
+                    const den = this._p.readUint32();
+                    if (den !== 0) {
+                        values.push(num / den);
+                    }
+                    break;
+                }
+                case TiffEntry.TYPE_FLOAT:
+                    values.push(this._p.readFloat32());
+                    break;
+                case TiffEntry.TYPE_DOUBLE:
+                    values.push(this._p.readFloat64());
+                    break;
+            }
+        }
+        return values;
+    }
+}
+TiffEntry.SIZE_OF_TYPE = [
+    0,
+    1,
+    1,
+    2,
+    4,
+    8,
+    1,
+    1,
+    2,
+    4,
+    8,
+    4,
+    8, 0,
+];
+TiffEntry.TYPE_BYTE = 1;
+TiffEntry.TYPE_ASCII = 2;
+TiffEntry.TYPE_SHORT = 3;
+TiffEntry.TYPE_LONG = 4;
+TiffEntry.TYPE_RATIONAL = 5;
+TiffEntry.TYPE_SBYTE = 6;
+TiffEntry.TYPE_UNDEFINED = 7;
+TiffEntry.TYPE_SSHORT = 8;
+TiffEntry.TYPE_SLONG = 9;
+TiffEntry.TYPE_SRATIONAL = 10;
+TiffEntry.TYPE_FLOAT = 11;
+TiffEntry.TYPE_DOUBLE = 12;
+//# sourceMappingURL=tiff-entry.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/formats/tiff/tiff-fax-decoder.js
+
+class TiffFaxDecoder {
+    constructor(options) {
+        this.changingElemSize = 0;
+        this.bitPointer = 0;
+        this.bytePointer = 0;
+        this.lastChangingElement = 0;
+        this.compression = 2;
+        this.uncompressedMode = 0;
+        this.fillBits = 0;
+        this.oneD = 0;
+        this._fillOrder = options.fillOrder;
+        this._width = options.width;
+        this._height = options.height;
+        this.prevChangingElems = new Array(this._width);
+        this.prevChangingElems.fill(0);
+        this.currChangingElems = new Array(this._width);
+        this.currChangingElems.fill(0);
+    }
+    get width() {
+        return this._width;
+    }
+    get height() {
+        return this._height;
+    }
+    get fillOrder() {
+        return this._fillOrder;
+    }
+    nextNBits(bitsToGet) {
+        let b = 0;
+        let next = 0;
+        let next2next = 0;
+        const l = this.data.length - 1;
+        const bp = this.bytePointer;
+        if (this._fillOrder === 1) {
+            b = this.data.getByte(bp);
+            if (bp === l) {
+                next = 0x00;
+                next2next = 0x00;
+            }
+            else if (bp + 1 === l) {
+                next = this.data.getByte(bp + 1);
+                next2next = 0x00;
+            }
+            else {
+                next = this.data.getByte(bp + 1);
+                next2next = this.data.getByte(bp + 2);
+            }
+        }
+        else if (this._fillOrder === 2) {
+            b = TiffFaxDecoder.FLIP_TABLE[this.data.getByte(bp) & 0xff];
+            if (bp === l) {
+                next = 0x00;
+                next2next = 0x00;
+            }
+            else if (bp + 1 === l) {
+                next = TiffFaxDecoder.FLIP_TABLE[this.data.getByte(bp + 1) & 0xff];
+                next2next = 0x00;
+            }
+            else {
+                next = TiffFaxDecoder.FLIP_TABLE[this.data.getByte(bp + 1) & 0xff];
+                next2next = TiffFaxDecoder.FLIP_TABLE[this.data.getByte(bp + 2) & 0xff];
+            }
+        }
+        else {
+            throw new ImageError('TIFFFaxDecoder7');
+        }
+        const bitsLeft = 8 - this.bitPointer;
+        let bitsFromNextByte = bitsToGet - bitsLeft;
+        let bitsFromNext2NextByte = 0;
+        if (bitsFromNextByte > 8) {
+            bitsFromNext2NextByte = bitsFromNextByte - 8;
+            bitsFromNextByte = 8;
+        }
+        this.bytePointer = this.bytePointer + 1;
+        const i1 = (b & TiffFaxDecoder.TABLE1[bitsLeft]) << (bitsToGet - bitsLeft);
+        let i2 = (next & TiffFaxDecoder.TABLE2[bitsFromNextByte]) >>
+            (8 - bitsFromNextByte);
+        let i3 = 0;
+        if (bitsFromNext2NextByte !== 0) {
+            i2 <<= bitsFromNext2NextByte;
+            i3 =
+                (next2next & TiffFaxDecoder.TABLE2[bitsFromNext2NextByte]) >>
+                    (8 - bitsFromNext2NextByte);
+            i2 |= i3;
+            this.bytePointer += 1;
+            this.bitPointer = bitsFromNext2NextByte;
+        }
+        else {
+            if (bitsFromNextByte === 8) {
+                this.bitPointer = 0;
+                this.bytePointer += 1;
+            }
+            else {
+                this.bitPointer = bitsFromNextByte;
+            }
+        }
+        return i1 | i2;
+    }
+    nextLesserThan8Bits(bitsToGet) {
+        let b = 0;
+        let next = 0;
+        const l = this.data.length - 1;
+        const bp = this.bytePointer;
+        if (this._fillOrder === 1) {
+            b = this.data.getByte(bp);
+            if (bp === l) {
+                next = 0x00;
+            }
+            else {
+                next = this.data.getByte(bp + 1);
+            }
+        }
+        else if (this._fillOrder === 2) {
+            b = TiffFaxDecoder.FLIP_TABLE[this.data.getByte(bp) & 0xff];
+            if (bp === l) {
+                next = 0x00;
+            }
+            else {
+                next = TiffFaxDecoder.FLIP_TABLE[this.data.getByte(bp + 1) & 0xff];
+            }
+        }
+        else {
+            throw new ImageError('TIFFFaxDecoder7');
+        }
+        const bitsLeft = 8 - this.bitPointer;
+        const bitsFromNextByte = bitsToGet - bitsLeft;
+        const shift = bitsLeft - bitsToGet;
+        let i1 = 0;
+        let i2 = 0;
+        if (shift >= 0) {
+            i1 = (b & TiffFaxDecoder.TABLE1[bitsLeft]) >> shift;
+            this.bitPointer += bitsToGet;
+            if (this.bitPointer === 8) {
+                this.bitPointer = 0;
+                this.bytePointer += 1;
+            }
+        }
+        else {
+            i1 = (b & TiffFaxDecoder.TABLE1[bitsLeft]) << -shift;
+            i2 =
+                (next & TiffFaxDecoder.TABLE2[bitsFromNextByte]) >>
+                    (8 - bitsFromNextByte);
+            i1 |= i2;
+            this.bytePointer += 1;
+            this.bitPointer = bitsFromNextByte;
+        }
+        return i1;
+    }
+    updatePointer(bitsToMoveBack) {
+        const i = this.bitPointer - bitsToMoveBack;
+        if (i < 0) {
+            this.bytePointer -= 1;
+            this.bitPointer = 8 + i;
+        }
+        else {
+            this.bitPointer = i;
+        }
+    }
+    advancePointer() {
+        if (this.bitPointer !== 0) {
+            this.bytePointer += 1;
+            this.bitPointer = 0;
+        }
+        return true;
+    }
+    setToBlack(buffer, lineOffset, bitOffset, numBits) {
+        let bitNum = 8 * lineOffset + bitOffset;
+        const lastBit = bitNum + numBits;
+        let byteNum = bitNum >> 3;
+        const shift = bitNum & 0x7;
+        if (shift > 0) {
+            let maskVal = 1 << (7 - shift);
+            let val = buffer.getByte(byteNum);
+            while (maskVal > 0 && bitNum < lastBit) {
+                val |= maskVal;
+                maskVal >>= 1;
+                ++bitNum;
+            }
+            buffer.setByte(byteNum, val);
+        }
+        byteNum = bitNum >> 3;
+        while (bitNum < lastBit - 7) {
+            buffer.setByte(byteNum++, 255);
+            bitNum += 8;
+        }
+        while (bitNum < lastBit) {
+            byteNum = bitNum >> 3;
+            buffer.setByte(byteNum, buffer.getByte(byteNum) | (1 << (7 - (bitNum & 0x7))));
+            ++bitNum;
+        }
+    }
+    decodeNextScanline(buffer, lineOffset, bitOffset) {
+        let offset = bitOffset;
+        let bits = 0;
+        let code = 0;
+        let isT = 0;
+        let current = 0;
+        let entry = 0;
+        let twoBits = 0;
+        let isWhite = true;
+        this.changingElemSize = 0;
+        while (offset < this._width) {
+            while (isWhite) {
+                current = this.nextNBits(10);
+                entry = TiffFaxDecoder.WHITE[current];
+                isT = entry & 0x0001;
+                bits = (entry >> 1) & 0x0f;
+                if (bits === 12) {
+                    twoBits = this.nextLesserThan8Bits(2);
+                    current = ((current << 2) & 0x000c) | twoBits;
+                    entry = TiffFaxDecoder.ADDITIONAL_MAKEUP[current];
+                    bits = (entry >> 1) & 0x07;
+                    code = (entry >> 4) & 0x0fff;
+                    offset += code;
+                    this.updatePointer(4 - bits);
+                }
+                else if (bits === 0) {
+                    throw new ImageError('TIFFFaxDecoder0');
+                }
+                else if (bits === 15) {
+                    throw new ImageError('TIFFFaxDecoder1');
+                }
+                else {
+                    code = (entry >> 5) & 0x07ff;
+                    offset += code;
+                    this.updatePointer(10 - bits);
+                    if (isT === 0) {
+                        isWhite = false;
+                        this.currChangingElems[this.changingElemSize++] = offset;
+                    }
+                }
+            }
+            if (offset === this._width) {
+                if (this.compression === 2) {
+                    this.advancePointer();
+                }
+                break;
+            }
+            while (isWhite === false) {
+                current = this.nextLesserThan8Bits(4);
+                entry = TiffFaxDecoder.INIT_BLACK[current];
+                isT = entry & 0x0001;
+                bits = (entry >> 1) & 0x000f;
+                code = (entry >> 5) & 0x07ff;
+                if (code === 100) {
+                    current = this.nextNBits(9);
+                    entry = TiffFaxDecoder.BLACK[current];
+                    isT = entry & 0x0001;
+                    bits = (entry >> 1) & 0x000f;
+                    code = (entry >> 5) & 0x07ff;
+                    if (bits === 12) {
+                        this.updatePointer(5);
+                        current = this.nextLesserThan8Bits(4);
+                        entry = TiffFaxDecoder.ADDITIONAL_MAKEUP[current];
+                        bits = (entry >> 1) & 0x07;
+                        code = (entry >> 4) & 0x0fff;
+                        this.setToBlack(buffer, lineOffset, offset, code);
+                        offset += code;
+                        this.updatePointer(4 - bits);
+                    }
+                    else if (bits === 15) {
+                        throw new ImageError('TIFFFaxDecoder2');
+                    }
+                    else {
+                        this.setToBlack(buffer, lineOffset, offset, code);
+                        offset += code;
+                        this.updatePointer(9 - bits);
+                        if (isT === 0) {
+                            isWhite = true;
+                            this.currChangingElems[this.changingElemSize++] = offset;
+                        }
+                    }
+                }
+                else if (code === 200) {
+                    current = this.nextLesserThan8Bits(2);
+                    entry = TiffFaxDecoder.TWO_BIT_BLACK[current];
+                    code = (entry >> 5) & 0x07ff;
+                    bits = (entry >> 1) & 0x0f;
+                    this.setToBlack(buffer, lineOffset, offset, code);
+                    offset += code;
+                    this.updatePointer(2 - bits);
+                    isWhite = true;
+                    this.currChangingElems[this.changingElemSize++] = offset;
+                }
+                else {
+                    this.setToBlack(buffer, lineOffset, offset, code);
+                    offset += code;
+                    this.updatePointer(4 - bits);
+                    isWhite = true;
+                    this.currChangingElems[this.changingElemSize++] = offset;
+                }
+            }
+            if (offset === this._width) {
+                if (this.compression === 2) {
+                    this.advancePointer();
+                }
+                break;
+            }
+        }
+        this.currChangingElems[this.changingElemSize++] = offset;
+    }
+    readEOL() {
+        if (this.fillBits === 0) {
+            if (this.nextNBits(12) !== 1) {
+                throw new ImageError('TIFFFaxDecoder6');
+            }
+        }
+        else if (this.fillBits === 1) {
+            const bitsLeft = 8 - this.bitPointer;
+            if (this.nextNBits(bitsLeft) !== 0) {
+                throw new ImageError('TIFFFaxDecoder8');
+            }
+            if (bitsLeft < 4) {
+                if (this.nextNBits(8) !== 0) {
+                    throw new ImageError('TIFFFaxDecoder8');
+                }
+            }
+            let n = 0;
+            while ((n = this.nextNBits(8)) !== 1) {
+                if (n !== 0) {
+                    throw new ImageError('TIFFFaxDecoder8');
+                }
+            }
+        }
+        if (this.oneD === 0) {
+            return 1;
+        }
+        else {
+            return this.nextLesserThan8Bits(1);
+        }
+    }
+    getNextChangingElement(a0, isWhite, ret) {
+        const pce = this.prevChangingElems;
+        const ces = this.changingElemSize;
+        let start = this.lastChangingElement > 0 ? this.lastChangingElement - 1 : 0;
+        if (isWhite) {
+            start &= ~0x1;
+        }
+        else {
+            start |= 0x1;
+        }
+        let i = start;
+        for (; i < ces; i += 2) {
+            const temp = pce[i];
+            if (temp > a0) {
+                this.lastChangingElement = i;
+                ret[0] = temp;
+                break;
+            }
+        }
+        if (i + 1 < ces) {
+            ret[1] = pce[i + 1];
+        }
+    }
+    decodeWhiteCodeWord() {
+        let current = 0;
+        let entry = 0;
+        let bits = 0;
+        let isT = 0;
+        let twoBits = 0;
+        let code = -1;
+        let runLength = 0;
+        let isWhite = true;
+        while (isWhite) {
+            current = this.nextNBits(10);
+            entry = TiffFaxDecoder.WHITE[current];
+            isT = entry & 0x0001;
+            bits = (entry >> 1) & 0x0f;
+            if (bits === 12) {
+                twoBits = this.nextLesserThan8Bits(2);
+                current = ((current << 2) & 0x000c) | twoBits;
+                entry = TiffFaxDecoder.ADDITIONAL_MAKEUP[current];
+                bits = (entry >> 1) & 0x07;
+                code = (entry >> 4) & 0x0fff;
+                runLength += code;
+                this.updatePointer(4 - bits);
+            }
+            else if (bits === 0) {
+                throw new ImageError('TIFFFaxDecoder0');
+            }
+            else if (bits === 15) {
+                throw new ImageError('TIFFFaxDecoder1');
+            }
+            else {
+                code = (entry >> 5) & 0x07ff;
+                runLength += code;
+                this.updatePointer(10 - bits);
+                if (isT === 0) {
+                    isWhite = false;
+                }
+            }
+        }
+        return runLength;
+    }
+    decodeBlackCodeWord() {
+        let current = 0;
+        let entry = 0;
+        let bits = 0;
+        let isT = 0;
+        let code = -1;
+        let runLength = 0;
+        let isWhite = false;
+        while (!isWhite) {
+            current = this.nextLesserThan8Bits(4);
+            entry = TiffFaxDecoder.INIT_BLACK[current];
+            isT = entry & 0x0001;
+            bits = (entry >> 1) & 0x000f;
+            code = (entry >> 5) & 0x07ff;
+            if (code === 100) {
+                current = this.nextNBits(9);
+                entry = TiffFaxDecoder.BLACK[current];
+                isT = entry & 0x0001;
+                bits = (entry >> 1) & 0x000f;
+                code = (entry >> 5) & 0x07ff;
+                if (bits === 12) {
+                    this.updatePointer(5);
+                    current = this.nextLesserThan8Bits(4);
+                    entry = TiffFaxDecoder.ADDITIONAL_MAKEUP[current];
+                    bits = (entry >> 1) & 0x07;
+                    code = (entry >> 4) & 0x0fff;
+                    runLength += code;
+                    this.updatePointer(4 - bits);
+                }
+                else if (bits === 15) {
+                    throw new ImageError('TIFFFaxDecoder2');
+                }
+                else {
+                    runLength += code;
+                    this.updatePointer(9 - bits);
+                    if (isT === 0) {
+                        isWhite = true;
+                    }
+                }
+            }
+            else if (code === 200) {
+                current = this.nextLesserThan8Bits(2);
+                entry = TiffFaxDecoder.TWO_BIT_BLACK[current];
+                code = (entry >> 5) & 0x07ff;
+                runLength += code;
+                bits = (entry >> 1) & 0x0f;
+                this.updatePointer(2 - bits);
+                isWhite = true;
+            }
+            else {
+                runLength += code;
+                this.updatePointer(4 - bits);
+                isWhite = true;
+            }
+        }
+        return runLength;
+    }
+    decode1D(out, compData, startX, height) {
+        this.data = compData;
+        this.bitPointer = 0;
+        this.bytePointer = 0;
+        let lineOffset = 0;
+        const scanlineStride = Math.trunc((this._width + 7) / 8);
+        for (let i = 0; i < height; i++) {
+            this.decodeNextScanline(out, lineOffset, startX);
+            lineOffset += scanlineStride;
+        }
+    }
+    decode2D(out, compData, startX, height, tiffT4Options) {
+        this.data = compData;
+        this.compression = 3;
+        this.bitPointer = 0;
+        this.bytePointer = 0;
+        const scanlineStride = Math.trunc((this._width + 7) / 8);
+        let a0 = 0;
+        let a1 = 0;
+        let entry = 0;
+        let code = 0;
+        let bits = 0;
+        let isWhite = false;
+        let currIndex = 0;
+        let temp = undefined;
+        const b = new Array(2);
+        b.fill(0);
+        this.oneD = tiffT4Options & 0x01;
+        this.uncompressedMode = (tiffT4Options & 0x02) >> 1;
+        this.fillBits = (tiffT4Options & 0x04) >> 2;
+        if (this.readEOL() !== 1) {
+            throw new ImageError('TIFFFaxDecoder3');
+        }
+        let lineOffset = 0;
+        let bitOffset = 0;
+        this.decodeNextScanline(out, lineOffset, startX);
+        lineOffset += scanlineStride;
+        for (let lines = 1; lines < height; lines++) {
+            if (this.readEOL() === 0) {
+                temp = this.prevChangingElems;
+                this.prevChangingElems = this.currChangingElems;
+                this.currChangingElems = temp;
+                currIndex = 0;
+                a0 = -1;
+                isWhite = true;
+                bitOffset = startX;
+                this.lastChangingElement = 0;
+                while (bitOffset < this._width) {
+                    this.getNextChangingElement(a0, isWhite, b);
+                    const b1 = b[0];
+                    const b2 = b[1];
+                    entry = this.nextLesserThan8Bits(7);
+                    entry = TiffFaxDecoder.TWO_D_CODES[entry] & 0xff;
+                    code = (entry & 0x78) >> 3;
+                    bits = entry & 0x07;
+                    if (code === 0) {
+                        if (!isWhite) {
+                            this.setToBlack(out, lineOffset, bitOffset, b2 - bitOffset);
+                        }
+                        a0 = b2;
+                        bitOffset = a0;
+                        this.updatePointer(7 - bits);
+                    }
+                    else if (code === 1) {
+                        this.updatePointer(7 - bits);
+                        let number = 0;
+                        if (isWhite) {
+                            number = this.decodeWhiteCodeWord();
+                            bitOffset += number;
+                            this.currChangingElems[currIndex++] = bitOffset;
+                            number = this.decodeBlackCodeWord();
+                            this.setToBlack(out, lineOffset, bitOffset, number);
+                            bitOffset += number;
+                            this.currChangingElems[currIndex++] = bitOffset;
+                        }
+                        else {
+                            number = this.decodeBlackCodeWord();
+                            this.setToBlack(out, lineOffset, bitOffset, number);
+                            bitOffset += number;
+                            this.currChangingElems[currIndex++] = bitOffset;
+                            number = this.decodeWhiteCodeWord();
+                            bitOffset += number;
+                            this.currChangingElems[currIndex++] = bitOffset;
+                        }
+                        a0 = bitOffset;
+                    }
+                    else if (code <= 8) {
+                        a1 = b1 + (code - 5);
+                        this.currChangingElems[currIndex++] = a1;
+                        if (!isWhite) {
+                            this.setToBlack(out, lineOffset, bitOffset, a1 - bitOffset);
+                        }
+                        a0 = a1;
+                        bitOffset = a0;
+                        isWhite = !isWhite;
+                        this.updatePointer(7 - bits);
+                    }
+                    else {
+                        throw new ImageError('TIFFFaxDecoder4');
+                    }
+                }
+                this.currChangingElems[currIndex++] = bitOffset;
+                this.changingElemSize = currIndex;
+            }
+            else {
+                this.decodeNextScanline(out, lineOffset, startX);
+            }
+            lineOffset += scanlineStride;
+        }
+    }
+    decodeT6(out, compData, startX, height, tiffT6Options) {
+        this.data = compData;
+        this.compression = 4;
+        this.bitPointer = 0;
+        this.bytePointer = 0;
+        const scanlineStride = Math.trunc((this._width + 7) / 8);
+        let a0 = 0;
+        let a1 = 0;
+        let b1 = 0;
+        let b2 = 0;
+        let entry = 0;
+        let code = 0;
+        let bits = 0;
+        let isWhite = false;
+        let currIndex = 0;
+        let temp = undefined;
+        const b = new Array(2);
+        b.fill(0);
+        this.uncompressedMode = (tiffT6Options & 0x02) >> 1;
+        let cce = this.currChangingElems;
+        this.changingElemSize = 0;
+        cce[this.changingElemSize++] = this._width;
+        cce[this.changingElemSize++] = this._width;
+        let lineOffset = 0;
+        let bitOffset = 0;
+        for (let lines = 0; lines < height; lines++) {
+            a0 = -1;
+            isWhite = true;
+            temp = this.prevChangingElems;
+            this.prevChangingElems = this.currChangingElems;
+            cce = (this.currChangingElems = temp);
+            currIndex = 0;
+            bitOffset = startX;
+            this.lastChangingElement = 0;
+            while (bitOffset < this._width) {
+                this.getNextChangingElement(a0, isWhite, b);
+                b1 = b[0];
+                b2 = b[1];
+                entry = this.nextLesserThan8Bits(7);
+                entry = TiffFaxDecoder.TWO_D_CODES[entry] & 0xff;
+                code = (entry & 0x78) >> 3;
+                bits = entry & 0x07;
+                if (code === 0) {
+                    if (!isWhite) {
+                        this.setToBlack(out, lineOffset, bitOffset, b2 - bitOffset);
+                    }
+                    a0 = b2;
+                    bitOffset = a0;
+                    this.updatePointer(7 - bits);
+                }
+                else if (code === 1) {
+                    this.updatePointer(7 - bits);
+                    let number = 0;
+                    if (isWhite) {
+                        number = this.decodeWhiteCodeWord();
+                        bitOffset += number;
+                        cce[currIndex++] = bitOffset;
+                        number = this.decodeBlackCodeWord();
+                        this.setToBlack(out, lineOffset, bitOffset, number);
+                        bitOffset += number;
+                        cce[currIndex++] = bitOffset;
+                    }
+                    else {
+                        number = this.decodeBlackCodeWord();
+                        this.setToBlack(out, lineOffset, bitOffset, number);
+                        bitOffset += number;
+                        cce[currIndex++] = bitOffset;
+                        number = this.decodeWhiteCodeWord();
+                        bitOffset += number;
+                        cce[currIndex++] = bitOffset;
+                    }
+                    a0 = bitOffset;
+                }
+                else if (code <= 8) {
+                    a1 = b1 + (code - 5);
+                    cce[currIndex++] = a1;
+                    if (!isWhite) {
+                        this.setToBlack(out, lineOffset, bitOffset, a1 - bitOffset);
+                    }
+                    a0 = a1;
+                    bitOffset = a0;
+                    isWhite = !isWhite;
+                    this.updatePointer(7 - bits);
+                }
+                else if (code === 11) {
+                    if (this.nextLesserThan8Bits(3) !== 7) {
+                        throw new ImageError('TIFFFaxDecoder5');
+                    }
+                    let zeros = 0;
+                    let exit = false;
+                    while (!exit) {
+                        while (this.nextLesserThan8Bits(1) !== 1) {
+                            zeros++;
+                        }
+                        if (zeros > 5) {
+                            zeros -= 6;
+                            if (!isWhite && zeros > 0) {
+                                cce[currIndex++] = bitOffset;
+                            }
+                            bitOffset += zeros;
+                            if (zeros > 0) {
+                                isWhite = true;
+                            }
+                            if (this.nextLesserThan8Bits(1) === 0) {
+                                if (!isWhite) {
+                                    cce[currIndex++] = bitOffset;
+                                }
+                                isWhite = true;
+                            }
+                            else {
+                                if (isWhite) {
+                                    cce[currIndex++] = bitOffset;
+                                }
+                                isWhite = false;
+                            }
+                            exit = true;
+                        }
+                        if (zeros === 5) {
+                            if (!isWhite) {
+                                cce[currIndex++] = bitOffset;
+                            }
+                            bitOffset += zeros;
+                            isWhite = true;
+                        }
+                        else {
+                            bitOffset += zeros;
+                            cce[currIndex++] = bitOffset;
+                            this.setToBlack(out, lineOffset, bitOffset, 1);
+                            ++bitOffset;
+                            isWhite = false;
+                        }
+                    }
+                }
+                else {
+                    throw new ImageError(`TIFFFaxDecoder5 ${code}`);
+                }
+            }
+            cce[currIndex++] = bitOffset;
+            this.changingElemSize = currIndex;
+            lineOffset += scanlineStride;
+        }
+    }
+}
+TiffFaxDecoder.TABLE1 = [
+    0x00,
+    0x01,
+    0x03,
+    0x07,
+    0x0f,
+    0x1f,
+    0x3f,
+    0x7f,
+    0xff,
+];
+TiffFaxDecoder.TABLE2 = [
+    0x00,
+    0x80,
+    0xc0,
+    0xe0,
+    0xf0,
+    0xf8,
+    0xfc,
+    0xfe,
+    0xff,
+];
+TiffFaxDecoder.FLIP_TABLE = [
+    0, -128, 64, -64, 32, -96, 96, -32, 16, -112, 80, -48, 48, -80, 112, -16, 8,
+    -120, 72, -56, 40, -88, 104, -24, 24, -104, 88, -40, 56, -72, 120, -8, 4,
+    -124, 68, -60, 36, -92, 100, -28, 20, -108, 84, -44, 52, -76, 116, -12, 12,
+    -116, 76, -52, 44, -84, 108, -20, 28, -100, 92, -36, 60, -68, 124, -4, 2,
+    -126, 66, -62, 34, -94, 98, -30, 18, -110, 82, -46, 50, -78, 114, -14, 10,
+    -118, 74, -54, 42, -86, 106, -22, 26, -102, 90, -38, 58, -70, 122, -6, 6,
+    -122, 70, -58, 38, -90, 102, -26, 22, -106, 86, -42, 54, -74, 118, -10, 14,
+    -114, 78, -50, 46, -82, 110, -18, 30, -98, 94, -34, 62, -66, 126, -2, 1,
+    -127, 65, -63, 33, -95, 97, -31, 17, -111, 81, -47, 49, -79, 113, -15, 9,
+    -119, 73, -55, 41, -87, 105, -23, 25, -103, 89, -39, 57, -71, 121, -7, 5,
+    -123, 69, -59, 37, -91, 101, -27, 21, -107, 85, -43, 53, -75, 117, -11, 13,
+    -115, 77, -51, 45, -83, 109, -19, 29, -99, 93, -35, 61, -67, 125, -3, 3,
+    -125, 67, -61, 35, -93, 99, -29, 19, -109, 83, -45, 51, -77, 115, -13, 11,
+    -117, 75, -53, 43, -85, 107, -21, 27, -101, 91, -37, 59, -69, 123, -5, 7,
+    -121, 71, -57, 39, -89, 103, -25, 23, -105, 87, -41, 55, -73, 119, -9, 15,
+    -113, 79, -49, 47, -81, 111, -17, 31, -97, 95, -33, 63, -65, 127, -1,
+];
+TiffFaxDecoder.WHITE = [
+    6430, 6400, 6400, 6400, 3225, 3225, 3225, 3225,
+    944, 944, 944, 944, 976, 976, 976, 976,
+    1456, 1456, 1456, 1456, 1488, 1488, 1488, 1488,
+    718, 718, 718, 718, 718, 718, 718, 718,
+    750, 750, 750, 750, 750, 750, 750, 750,
+    1520, 1520, 1520, 1520, 1552, 1552, 1552, 1552,
+    428, 428, 428, 428, 428, 428, 428, 428,
+    428, 428, 428, 428, 428, 428, 428, 428,
+    654, 654, 654, 654, 654, 654, 654, 654,
+    1072, 1072, 1072, 1072, 1104, 1104, 1104, 1104,
+    1136, 1136, 1136, 1136, 1168, 1168, 1168, 1168,
+    1200, 1200, 1200, 1200, 1232, 1232, 1232, 1232,
+    622, 622, 622, 622, 622, 622, 622, 622,
+    1008, 1008, 1008, 1008, 1040, 1040, 1040, 1040,
+    44, 44, 44, 44, 44, 44, 44, 44,
+    44, 44, 44, 44, 44, 44, 44, 44,
+    396, 396, 396, 396, 396, 396, 396, 396,
+    396, 396, 396, 396, 396, 396, 396, 396,
+    1712, 1712, 1712, 1712, 1744, 1744, 1744, 1744,
+    846, 846, 846, 846, 846, 846, 846, 846,
+    1264, 1264, 1264, 1264, 1296, 1296, 1296, 1296,
+    1328, 1328, 1328, 1328, 1360, 1360, 1360, 1360,
+    1392, 1392, 1392, 1392, 1424, 1424, 1424, 1424,
+    686, 686, 686, 686, 686, 686, 686, 686,
+    910, 910, 910, 910, 910, 910, 910, 910,
+    1968, 1968, 1968, 1968, 2000, 2000, 2000, 2000,
+    2032, 2032, 2032, 2032, 16, 16, 16, 16,
+    10257, 10257, 10257, 10257, 12305, 12305, 12305, 12305,
+    330, 330, 330, 330, 330, 330, 330, 330,
+    330, 330, 330, 330, 330, 330, 330, 330,
+    330, 330, 330, 330, 330, 330, 330, 330,
+    330, 330, 330, 330, 330, 330, 330, 330,
+    362, 362, 362, 362, 362, 362, 362, 362,
+    362, 362, 362, 362, 362, 362, 362, 362,
+    362, 362, 362, 362, 362, 362, 362, 362,
+    362, 362, 362, 362, 362, 362, 362, 362,
+    878, 878, 878, 878, 878, 878, 878, 878,
+    1904, 1904, 1904, 1904, 1936, 1936, 1936, 1936,
+    -18413, -18413, -16365, -16365, -14317, -14317, -10221, -10221,
+    590, 590, 590, 590, 590, 590, 590, 590,
+    782, 782, 782, 782, 782, 782, 782, 782,
+    1584, 1584, 1584, 1584, 1616, 1616, 1616, 1616,
+    1648, 1648, 1648, 1648, 1680, 1680, 1680, 1680,
+    814, 814, 814, 814, 814, 814, 814, 814,
+    1776, 1776, 1776, 1776, 1808, 1808, 1808, 1808,
+    1840, 1840, 1840, 1840, 1872, 1872, 1872, 1872,
+    6157, 6157, 6157, 6157, 6157, 6157, 6157, 6157,
+    6157, 6157, 6157, 6157, 6157, 6157, 6157, 6157,
+    -12275, -12275, -12275, -12275, -12275, -12275, -12275, -12275,
+    -12275, -12275, -12275, -12275, -12275, -12275, -12275, -12275,
+    14353, 14353, 14353, 14353, 16401, 16401, 16401, 16401,
+    22547, 22547, 24595, 24595, 20497, 20497, 20497, 20497,
+    18449, 18449, 18449, 18449, 26643, 26643, 28691, 28691,
+    30739, 30739, -32749, -32749, -30701, -30701, -28653, -28653,
+    -26605, -26605, -24557, -24557, -22509, -22509, -20461, -20461,
+    8207, 8207, 8207, 8207, 8207, 8207, 8207, 8207,
+    72, 72, 72, 72, 72, 72, 72, 72,
+    72, 72, 72, 72, 72, 72, 72, 72,
+    72, 72, 72, 72, 72, 72, 72, 72,
+    72, 72, 72, 72, 72, 72, 72, 72,
+    72, 72, 72, 72, 72, 72, 72, 72,
+    72, 72, 72, 72, 72, 72, 72, 72,
+    72, 72, 72, 72, 72, 72, 72, 72,
+    72, 72, 72, 72, 72, 72, 72, 72,
+    104, 104, 104, 104, 104, 104, 104, 104,
+    104, 104, 104, 104, 104, 104, 104, 104,
+    104, 104, 104, 104, 104, 104, 104, 104,
+    104, 104, 104, 104, 104, 104, 104, 104,
+    104, 104, 104, 104, 104, 104, 104, 104,
+    104, 104, 104, 104, 104, 104, 104, 104,
+    104, 104, 104, 104, 104, 104, 104, 104,
+    104, 104, 104, 104, 104, 104, 104, 104,
+    4107, 4107, 4107, 4107, 4107, 4107, 4107, 4107,
+    4107, 4107, 4107, 4107, 4107, 4107, 4107, 4107,
+    4107, 4107, 4107, 4107, 4107, 4107, 4107, 4107,
+    4107, 4107, 4107, 4107, 4107, 4107, 4107, 4107,
+    266, 266, 266, 266, 266, 266, 266, 266,
+    266, 266, 266, 266, 266, 266, 266, 266,
+    266, 266, 266, 266, 266, 266, 266, 266,
+    266, 266, 266, 266, 266, 266, 266, 266,
+    298, 298, 298, 298, 298, 298, 298, 298,
+    298, 298, 298, 298, 298, 298, 298, 298,
+    298, 298, 298, 298, 298, 298, 298, 298,
+    298, 298, 298, 298, 298, 298, 298, 298,
+    524, 524, 524, 524, 524, 524, 524, 524,
+    524, 524, 524, 524, 524, 524, 524, 524,
+    556, 556, 556, 556, 556, 556, 556, 556,
+    556, 556, 556, 556, 556, 556, 556, 556,
+    136, 136, 136, 136, 136, 136, 136, 136,
+    136, 136, 136, 136, 136, 136, 136, 136,
+    136, 136, 136, 136, 136, 136, 136, 136,
+    136, 136, 136, 136, 136, 136, 136, 136,
+    136, 136, 136, 136, 136, 136, 136, 136,
+    136, 136, 136, 136, 136, 136, 136, 136,
+    136, 136, 136, 136, 136, 136, 136, 136,
+    136, 136, 136, 136, 136, 136, 136, 136,
+    168, 168, 168, 168, 168, 168, 168, 168,
+    168, 168, 168, 168, 168, 168, 168, 168,
+    168, 168, 168, 168, 168, 168, 168, 168,
+    168, 168, 168, 168, 168, 168, 168, 168,
+    168, 168, 168, 168, 168, 168, 168, 168,
+    168, 168, 168, 168, 168, 168, 168, 168,
+    168, 168, 168, 168, 168, 168, 168, 168,
+    168, 168, 168, 168, 168, 168, 168, 168,
+    460, 460, 460, 460, 460, 460, 460, 460,
+    460, 460, 460, 460, 460, 460, 460, 460,
+    492, 492, 492, 492, 492, 492, 492, 492,
+    492, 492, 492, 492, 492, 492, 492, 492,
+    2059, 2059, 2059, 2059, 2059, 2059, 2059, 2059,
+    2059, 2059, 2059, 2059, 2059, 2059, 2059, 2059,
+    2059, 2059, 2059, 2059, 2059, 2059, 2059, 2059,
+    2059, 2059, 2059, 2059, 2059, 2059, 2059, 2059,
+    200, 200, 200, 200, 200, 200, 200, 200,
+    200, 200, 200, 200, 200, 200, 200, 200,
+    200, 200, 200, 200, 200, 200, 200, 200,
+    200, 200, 200, 200, 200, 200, 200, 200,
+    200, 200, 200, 200, 200, 200, 200, 200,
+    200, 200, 200, 200, 200, 200, 200, 200,
+    200, 200, 200, 200, 200, 200, 200, 200,
+    200, 200, 200, 200, 200, 200, 200, 200,
+    232, 232, 232, 232, 232, 232, 232, 232,
+    232, 232, 232, 232, 232, 232, 232, 232,
+    232, 232, 232, 232, 232, 232, 232, 232,
+    232, 232, 232, 232, 232, 232, 232, 232,
+    232, 232, 232, 232, 232, 232, 232, 232,
+    232, 232, 232, 232, 232, 232, 232, 232,
+    232, 232, 232, 232, 232, 232, 232, 232,
+    232, 232, 232, 232, 232, 232, 232, 232,
+];
+TiffFaxDecoder.ADDITIONAL_MAKEUP = [
+    28679, 28679, 31752, -32759, -31735, -30711, -29687, -28663, 29703, 29703,
+    30727, 30727, -27639, -26615, -25591, -24567,
+];
+TiffFaxDecoder.INIT_BLACK = [
+    3226, 6412, 200, 168, 38, 38, 134, 134,
+    100, 100, 100, 100, 68, 68, 68, 68,
+];
+TiffFaxDecoder.TWO_BIT_BLACK = [292, 260, 226, 226];
+TiffFaxDecoder.BLACK = [
+    62, 62, 30, 30, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    3225, 3225, 3225, 3225, 3225, 3225, 3225, 3225,
+    3225, 3225, 3225, 3225, 3225, 3225, 3225, 3225,
+    3225, 3225, 3225, 3225, 3225, 3225, 3225, 3225,
+    3225, 3225, 3225, 3225, 3225, 3225, 3225, 3225,
+    588, 588, 588, 588, 588, 588, 588, 588,
+    1680, 1680, 20499, 22547, 24595, 26643, 1776, 1776,
+    1808, 1808, -24557, -22509, -20461, -18413, 1904, 1904,
+    1936, 1936, -16365, -14317, 782, 782, 782, 782,
+    814, 814, 814, 814, -12269, -10221, 10257, 10257,
+    12305, 12305, 14353, 14353, 16403, 18451, 1712, 1712,
+    1744, 1744, 28691, 30739, -32749, -30701, -28653, -26605,
+    2061, 2061, 2061, 2061, 2061, 2061, 2061, 2061,
+    424, 424, 424, 424, 424, 424, 424, 424,
+    424, 424, 424, 424, 424, 424, 424, 424,
+    424, 424, 424, 424, 424, 424, 424, 424,
+    424, 424, 424, 424, 424, 424, 424, 424,
+    750, 750, 750, 750, 1616, 1616, 1648, 1648,
+    1424, 1424, 1456, 1456, 1488, 1488, 1520, 1520,
+    1840, 1840, 1872, 1872, 1968, 1968, 8209, 8209,
+    524, 524, 524, 524, 524, 524, 524, 524,
+    556, 556, 556, 556, 556, 556, 556, 556,
+    1552, 1552, 1584, 1584, 2000, 2000, 2032, 2032,
+    976, 976, 1008, 1008, 1040, 1040, 1072, 1072,
+    1296, 1296, 1328, 1328, 718, 718, 718, 718,
+    456, 456, 456, 456, 456, 456, 456, 456,
+    456, 456, 456, 456, 456, 456, 456, 456,
+    456, 456, 456, 456, 456, 456, 456, 456,
+    456, 456, 456, 456, 456, 456, 456, 456,
+    326, 326, 326, 326, 326, 326, 326, 326,
+    326, 326, 326, 326, 326, 326, 326, 326,
+    326, 326, 326, 326, 326, 326, 326, 326,
+    326, 326, 326, 326, 326, 326, 326, 326,
+    326, 326, 326, 326, 326, 326, 326, 326,
+    326, 326, 326, 326, 326, 326, 326, 326,
+    326, 326, 326, 326, 326, 326, 326, 326,
+    326, 326, 326, 326, 326, 326, 326, 326,
+    358, 358, 358, 358, 358, 358, 358, 358,
+    358, 358, 358, 358, 358, 358, 358, 358,
+    358, 358, 358, 358, 358, 358, 358, 358,
+    358, 358, 358, 358, 358, 358, 358, 358,
+    358, 358, 358, 358, 358, 358, 358, 358,
+    358, 358, 358, 358, 358, 358, 358, 358,
+    358, 358, 358, 358, 358, 358, 358, 358,
+    358, 358, 358, 358, 358, 358, 358, 358,
+    490, 490, 490, 490, 490, 490, 490, 490,
+    490, 490, 490, 490, 490, 490, 490, 490,
+    4113, 4113, 6161, 6161, 848, 848, 880, 880,
+    912, 912, 944, 944, 622, 622, 622, 622,
+    654, 654, 654, 654, 1104, 1104, 1136, 1136,
+    1168, 1168, 1200, 1200, 1232, 1232, 1264, 1264,
+    686, 686, 686, 686, 1360, 1360, 1392, 1392,
+    12, 12, 12, 12, 12, 12, 12, 12,
+    390, 390, 390, 390, 390, 390, 390, 390,
+    390, 390, 390, 390, 390, 390, 390, 390,
+    390, 390, 390, 390, 390, 390, 390, 390,
+    390, 390, 390, 390, 390, 390, 390, 390,
+    390, 390, 390, 390, 390, 390, 390, 390,
+    390, 390, 390, 390, 390, 390, 390, 390,
+    390, 390, 390, 390, 390, 390, 390, 390,
+    390, 390, 390, 390, 390, 390, 390, 390,
+];
+TiffFaxDecoder.TWO_D_CODES = [
+    80, 88, 23, 71, 30, 30, 62, 62,
+    4, 4, 4, 4, 4, 4, 4, 4,
+    11, 11, 11, 11, 11, 11, 11, 11,
+    11, 11, 11, 11, 11, 11, 11, 11,
+    35, 35, 35, 35, 35, 35, 35, 35,
+    35, 35, 35, 35, 35, 35, 35, 35,
+    51, 51, 51, 51, 51, 51, 51, 51,
+    51, 51, 51, 51, 51, 51, 51, 51,
+    41, 41, 41, 41, 41, 41, 41, 41,
+    41, 41, 41, 41, 41, 41, 41, 41,
+    41, 41, 41, 41, 41, 41, 41, 41,
+    41, 41, 41, 41, 41, 41, 41, 41,
+    41, 41, 41, 41, 41, 41, 41, 41,
+    41, 41, 41, 41, 41, 41, 41, 41,
+    41, 41, 41, 41, 41, 41, 41, 41,
+    41, 41, 41, 41, 41, 41, 41, 41,
+];
+//# sourceMappingURL=tiff-fax-decoder.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/formats/tiff/tiff-lzw-decoder.js
+
+class LzwDecoder {
+    constructor() {
+        this.buffer = new Uint8Array(4096);
+        this.bitsToGet = 9;
+        this.bytePointer = 0;
+        this.nextData = 0;
+        this.nextBits = 0;
+    }
+    addString(string, newString) {
+        this.table[this.tableIndex] = newString;
+        this.prefix[this.tableIndex] = string;
+        this.tableIndex = this.tableIndex + 1;
+        if (this.tableIndex === 511) {
+            this.bitsToGet = 10;
+        }
+        else if (this.tableIndex === 1023) {
+            this.bitsToGet = 11;
+        }
+        else if (this.tableIndex === 2047) {
+            this.bitsToGet = 12;
+        }
+    }
+    getString(code) {
+        this.bufferLength = 0;
+        let c = code;
+        this.buffer[this.bufferLength++] = this.table[c];
+        c = this.prefix[c];
+        while (c !== LzwDecoder.NO_SUCH_CODE) {
+            this.buffer[this.bufferLength++] = this.table[c];
+            c = this.prefix[c];
+        }
+    }
+    getNextCode() {
+        if (this.bytePointer >= this.dataLength) {
+            return 257;
+        }
+        while (this.nextBits < this.bitsToGet) {
+            if (this.bytePointer >= this.dataLength) {
+                return 257;
+            }
+            this.nextData =
+                ((this.nextData << 8) + this.data[this.bytePointer++]) & 0xffffffff;
+            this.nextBits += 8;
+        }
+        this.nextBits -= this.bitsToGet;
+        const code = (this.nextData >> this.nextBits) &
+            LzwDecoder.AND_TABLE[this.bitsToGet - 9];
+        return code;
+    }
+    initializeStringTable() {
+        this.table = new Uint8Array(LzwDecoder.LZ_MAX_CODE + 1);
+        this.prefix = new Uint32Array(LzwDecoder.LZ_MAX_CODE + 1);
+        this.prefix.fill(LzwDecoder.NO_SUCH_CODE, 0, this.prefix.length);
+        for (let i = 0; i < 256; i++) {
+            this.table[i] = i;
+        }
+        this.bitsToGet = 9;
+        this.tableIndex = 258;
+    }
+    decode(p, out) {
+        this.out = out;
+        const outLen = out.length;
+        this.outPointer = 0;
+        this.data = p.buffer;
+        this.dataLength = this.data.length;
+        this.bytePointer = p.offset;
+        if (this.data[0] === 0x00 && this.data[1] === 0x01) {
+            throw new ImageError('Invalid LZW Data');
+        }
+        this.initializeStringTable();
+        this.nextData = 0;
+        this.nextBits = 0;
+        let oldCode = 0;
+        let code = this.getNextCode();
+        while (code !== 257 && this.outPointer < outLen) {
+            if (code === 256) {
+                this.initializeStringTable();
+                code = this.getNextCode();
+                this.bufferLength = 0;
+                if (code === 257) {
+                    break;
+                }
+                this.out[this.outPointer++] = code;
+                oldCode = code;
+            }
+            else {
+                if (code < this.tableIndex) {
+                    this.getString(code);
+                    for (let i = this.bufferLength - 1; i >= 0; --i) {
+                        this.out[this.outPointer++] = this.buffer[i];
+                    }
+                    this.addString(oldCode, this.buffer[this.bufferLength - 1]);
+                    oldCode = code;
+                }
+                else {
+                    this.getString(oldCode);
+                    for (let i = this.bufferLength - 1; i >= 0; --i) {
+                        this.out[this.outPointer++] = this.buffer[i];
+                    }
+                    this.out[this.outPointer++] = this.buffer[this.bufferLength - 1];
+                    this.addString(oldCode, this.buffer[this.bufferLength - 1]);
+                    oldCode = code;
+                }
+            }
+            code = this.getNextCode();
+        }
+    }
+}
+LzwDecoder.LZ_MAX_CODE = 4095;
+LzwDecoder.NO_SUCH_CODE = 4098;
+LzwDecoder.AND_TABLE = [511, 1023, 2047, 4095];
+//# sourceMappingURL=tiff-lzw-decoder.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/formats/tiff/tiff-image.js
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+class TiffImage {
+    constructor(p) {
+        this._tags = new Map();
+        this._width = 0;
+        this._height = 0;
+        this._compression = 1;
+        this._bitsPerSample = 1;
+        this._samplesPerPixel = 1;
+        this._sampleFormat = TiffImage.FORMAT_UINT;
+        this._imageType = TiffImage.TYPE_UNSUPPORTED;
+        this._isWhiteZero = false;
+        this._predictor = 1;
+        this._chromaSubH = 0;
+        this._chromaSubV = 0;
+        this._tiled = false;
+        this._tileWidth = 0;
+        this._tileHeight = 0;
+        this._tilesX = 0;
+        this._tilesY = 0;
+        this._fillOrder = 1;
+        this._t4Options = 0;
+        this._t6Options = 0;
+        this.colorMapRed = 0;
+        this.colorMapGreen = 0;
+        this.colorMapBlue = 0;
+        const p3 = InputBuffer.from(p);
+        const numDirEntries = p.readUint16();
+        for (let i = 0; i < numDirEntries; ++i) {
+            const tag = p.readUint16();
+            const type = p.readUint16();
+            const numValues = p.readUint32();
+            const entry = new TiffEntry({
+                tag: tag,
+                type: type,
+                numValues: numValues,
+                p: p3,
+            });
+            if (entry.numValues * entry.typeSize > 4) {
+                entry.valueOffset = p.readUint32();
+            }
+            else {
+                entry.valueOffset = p.offset;
+                p.offset += 4;
+            }
+            this._tags.set(entry.tag, entry);
+            if (entry.tag === TiffImage.TAG_IMAGE_WIDTH) {
+                this._width = entry.readValue();
+            }
+            else if (entry.tag === TiffImage.TAG_IMAGE_LENGTH) {
+                this._height = entry.readValue();
+            }
+            else if (entry.tag === TiffImage.TAG_PHOTOMETRIC_INTERPRETATION) {
+                this._photometricType = entry.readValue();
+            }
+            else if (entry.tag === TiffImage.TAG_COMPRESSION) {
+                this._compression = entry.readValue();
+            }
+            else if (entry.tag === TiffImage.TAG_BITS_PER_SAMPLE) {
+                this._bitsPerSample = entry.readValue();
+            }
+            else if (entry.tag === TiffImage.TAG_SAMPLES_PER_PIXEL) {
+                this._samplesPerPixel = entry.readValue();
+            }
+            else if (entry.tag === TiffImage.TAG_PREDICTOR) {
+                this._predictor = entry.readValue();
+            }
+            else if (entry.tag === TiffImage.TAG_SAMPLE_FORMAT) {
+                this._sampleFormat = entry.readValue();
+            }
+            else if (entry.tag === TiffImage.TAG_COLOR_MAP) {
+                this._colorMap = entry.readValues();
+                this.colorMapRed = 0;
+                this.colorMapGreen = Math.trunc(this._colorMap.length / 3);
+                this.colorMapBlue = this.colorMapGreen * 2;
+            }
+        }
+        if (this._width === 0 || this._height === 0) {
+            return;
+        }
+        if (this._colorMap !== undefined && this._bitsPerSample === 8) {
+            for (let i = 0, len = this._colorMap.length; i < len; ++i) {
+                this._colorMap[i] >>= 8;
+            }
+        }
+        if (this._photometricType === 0) {
+            this._isWhiteZero = true;
+        }
+        if (this.hasTag(TiffImage.TAG_TILE_OFFSETS)) {
+            this._tiled = true;
+            this._tileWidth = this.readTag(TiffImage.TAG_TILE_WIDTH);
+            this._tileHeight = this.readTag(TiffImage.TAG_TILE_LENGTH);
+            this._tileOffsets = this.readTagList(TiffImage.TAG_TILE_OFFSETS);
+            this._tileByteCounts = this.readTagList(TiffImage.TAG_TILE_BYTE_COUNTS);
+        }
+        else {
+            this._tiled = false;
+            this._tileWidth = this.readTag(TiffImage.TAG_TILE_WIDTH, this._width);
+            if (!this.hasTag(TiffImage.TAG_ROWS_PER_STRIP)) {
+                this._tileHeight = this.readTag(TiffImage.TAG_TILE_LENGTH, this._height);
+            }
+            else {
+                const l = this.readTag(TiffImage.TAG_ROWS_PER_STRIP);
+                let infinity = 1;
+                infinity = (infinity << 32) - 1;
+                if (l === infinity) {
+                    this._tileHeight = this._height;
+                }
+                else {
+                    this._tileHeight = l;
+                }
+            }
+            this._tileOffsets = this.readTagList(TiffImage.TAG_STRIP_OFFSETS);
+            this._tileByteCounts = this.readTagList(TiffImage.TAG_STRIP_BYTE_COUNTS);
+        }
+        this._tilesX = Math.trunc((this._width + this._tileWidth - 1) / this._tileWidth);
+        this._tilesY = Math.trunc((this._height + this._tileHeight - 1) / this._tileHeight);
+        this._tileSize = this._tileWidth * this._tileHeight * this._samplesPerPixel;
+        this._fillOrder = this.readTag(TiffImage.TAG_FILL_ORDER, 1);
+        this._t4Options = this.readTag(TiffImage.TAG_T4_OPTIONS);
+        this._t6Options = this.readTag(TiffImage.TAG_T6_OPTIONS);
+        this._extraSamples = this.readTag(TiffImage.TAG_EXTRA_SAMPLES);
+        switch (this._photometricType) {
+            case 0:
+            case 1:
+                if (this._bitsPerSample === 1 && this._samplesPerPixel === 1) {
+                    this._imageType = TiffImage.TYPE_BILEVEL;
+                }
+                else if (this._bitsPerSample === 4 && this._samplesPerPixel === 1) {
+                    this._imageType = TiffImage.TYPE_GRAY_4BIT;
+                }
+                else if (this._bitsPerSample % 8 === 0) {
+                    if (this._samplesPerPixel === 1) {
+                        this._imageType = TiffImage.TYPE_GRAY;
+                    }
+                    else if (this._samplesPerPixel === 2) {
+                        this._imageType = TiffImage.TYPE_GRAY_ALPHA;
+                    }
+                    else {
+                        this._imageType = TiffImage.TYPE_GENERIC;
+                    }
+                }
+                break;
+            case 2:
+                if (this._bitsPerSample % 8 === 0) {
+                    if (this._samplesPerPixel === 3) {
+                        this._imageType = TiffImage.TYPE_RGB;
+                    }
+                    else if (this._samplesPerPixel === 4) {
+                        this._imageType = TiffImage.TYPE_RGB_ALPHA;
+                    }
+                    else {
+                        this._imageType = TiffImage.TYPE_GENERIC;
+                    }
+                }
+                break;
+            case 3:
+                if (this._samplesPerPixel === 1 &&
+                    (this._bitsPerSample === 4 ||
+                        this._bitsPerSample === 8 ||
+                        this._bitsPerSample === 16)) {
+                    this._imageType = TiffImage.TYPE_PALETTE;
+                }
+                break;
+            case 4:
+                if (this._bitsPerSample === 1 && this._samplesPerPixel === 1) {
+                    this._imageType = TiffImage.TYPE_BILEVEL;
+                }
+                break;
+            case 6:
+                if (this._compression === TiffImage.COMPRESSION_JPEG &&
+                    this._bitsPerSample === 8 &&
+                    this._samplesPerPixel === 3) {
+                    this._imageType = TiffImage.TYPE_RGB;
+                }
+                else {
+                    if (this.hasTag(TiffImage.TAG_YCBCR_SUBSAMPLING)) {
+                        const v = this._tags
+                            .get(TiffImage.TAG_YCBCR_SUBSAMPLING)
+                            .readValues();
+                        this._chromaSubH = v[0];
+                        this._chromaSubV = v[1];
+                    }
+                    else {
+                        this._chromaSubH = 2;
+                        this._chromaSubV = 2;
+                    }
+                    if (this._chromaSubH * this._chromaSubV === 1) {
+                        this._imageType = TiffImage.TYPE_GENERIC;
+                    }
+                    else if (this._bitsPerSample === 8 && this._samplesPerPixel === 3) {
+                        this._imageType = TiffImage.TYPE_YCBCR_SUB;
+                    }
+                }
+                break;
+            default:
+                if (this._bitsPerSample % 8 === 0) {
+                    this._imageType = TiffImage.TYPE_GENERIC;
+                }
+                break;
+        }
+    }
+    get tags() {
+        return this._tags;
+    }
+    get width() {
+        return this._width;
+    }
+    get height() {
+        return this._height;
+    }
+    get photometricType() {
+        return this._photometricType;
+    }
+    get compression() {
+        return this._compression;
+    }
+    get bitsPerSample() {
+        return this._bitsPerSample;
+    }
+    get samplesPerPixel() {
+        return this._samplesPerPixel;
+    }
+    get sampleFormat() {
+        return this._sampleFormat;
+    }
+    get imageType() {
+        return this._imageType;
+    }
+    get isWhiteZero() {
+        return this._isWhiteZero;
+    }
+    get predictor() {
+        return this._predictor;
+    }
+    get chromaSubH() {
+        return this._chromaSubH;
+    }
+    get chromaSubV() {
+        return this._chromaSubV;
+    }
+    get tiled() {
+        return this._tiled;
+    }
+    get tileWidth() {
+        return this._tileWidth;
+    }
+    get tileHeight() {
+        return this._tileHeight;
+    }
+    get tileOffsets() {
+        return this._tileOffsets;
+    }
+    get tileByteCounts() {
+        return this._tileByteCounts;
+    }
+    get tilesX() {
+        return this._tilesX;
+    }
+    get tilesY() {
+        return this._tilesY;
+    }
+    get tileSize() {
+        return this._tileSize;
+    }
+    get fillOrder() {
+        return this._fillOrder;
+    }
+    get t4Options() {
+        return this._t4Options;
+    }
+    get t6Options() {
+        return this._t6Options;
+    }
+    get extraSamples() {
+        return this._extraSamples;
+    }
+    get colorMap() {
+        return this._colorMap;
+    }
+    get isValid() {
+        return this._width !== 0 && this._height !== 0;
+    }
+    readTag(type, defaultValue = 0) {
+        if (!this.hasTag(type)) {
+            return defaultValue;
+        }
+        return this._tags.get(type).readValue();
+    }
+    readTagList(type) {
+        if (!this.hasTag(type)) {
+            return undefined;
+        }
+        return this._tags.get(type).readValues();
+    }
+    decodeBilevelTile(p, tileX, tileY) {
+        const tileIndex = tileY * this._tilesX + tileX;
+        p.offset = this._tileOffsets[tileIndex];
+        const outX = tileX * this._tileWidth;
+        const outY = tileY * this._tileHeight;
+        const byteCount = this._tileByteCounts[tileIndex];
+        let bdata = undefined;
+        if (this._compression === TiffImage.COMPRESSION_PACKBITS) {
+            let bytesInThisTile = 0;
+            if (this._tileWidth % 8 === 0) {
+                bytesInThisTile = Math.trunc(this._tileWidth / 8) * this._tileHeight;
+            }
+            else {
+                bytesInThisTile =
+                    (Math.trunc(this._tileWidth / 8) + 1) * this._tileHeight;
+            }
+            bdata = new InputBuffer({
+                buffer: new Uint8Array(this._tileWidth * this._tileHeight),
+            });
+            this.decodePackbits(p, bytesInThisTile, bdata.buffer);
+        }
+        else if (this._compression === TiffImage.COMPRESSION_LZW) {
+            bdata = new InputBuffer({
+                buffer: new Uint8Array(this._tileWidth * this._tileHeight),
+            });
+            const decoder = new LzwDecoder();
+            decoder.decode(InputBuffer.from(p, 0, byteCount), bdata.buffer);
+            if (this._predictor === 2) {
+                let count = 0;
+                for (let j = 0; j < this._height; j++) {
+                    count = this._samplesPerPixel * (j * this._width + 1);
+                    for (let i = this._samplesPerPixel; i < this._width * this._samplesPerPixel; i++) {
+                        const b = bdata.getByte(count) +
+                            bdata.getByte(count - this._samplesPerPixel);
+                        bdata.setByte(count, b);
+                        count++;
+                    }
+                }
+            }
+        }
+        else if (this._compression === TiffImage.COMPRESSION_CCITT_RLE) {
+            bdata = new InputBuffer({
+                buffer: new Uint8Array(this._tileWidth * this._tileHeight),
+            });
+            try {
+                const decoder = new TiffFaxDecoder({
+                    fillOrder: this._fillOrder,
+                    width: this._tileWidth,
+                    height: this._tileHeight,
+                });
+                decoder.decode1D(bdata, p, 0, this._tileHeight);
+            }
+            catch (_) {
+            }
+        }
+        else if (this._compression === TiffImage.COMPRESSION_CCITT_FAX3) {
+            bdata = new InputBuffer({
+                buffer: new Uint8Array(this._tileWidth * this._tileHeight),
+            });
+            try {
+                const decoder = new TiffFaxDecoder({
+                    fillOrder: this._fillOrder,
+                    width: this._tileWidth,
+                    height: this._tileHeight,
+                });
+                decoder.decode2D(bdata, p, 0, this._tileHeight, this._t4Options);
+            }
+            catch (_) {
+            }
+        }
+        else if (this._compression === TiffImage.COMPRESSION_CCITT_FAX4) {
+            bdata = new InputBuffer({
+                buffer: new Uint8Array(this._tileWidth * this._tileHeight),
+            });
+            try {
+                const decoder = new TiffFaxDecoder({
+                    fillOrder: this._fillOrder,
+                    width: this._tileWidth,
+                    height: this._tileHeight,
+                });
+                decoder.decodeT6(bdata, p, 0, this._tileHeight, this._t6Options);
+            }
+            catch (_) {
+            }
+        }
+        else if (this._compression === TiffImage.COMPRESSION_ZIP) {
+            const data = p.toUint8Array(0, byteCount);
+            const outData = (0,UZIP.inflate)(data);
+            bdata = new InputBuffer({
+                buffer: outData,
+            });
+        }
+        else if (this._compression === TiffImage.COMPRESSION_DEFLATE) {
+            const data = p.toUint8Array(0, byteCount);
+            const outData = (0,UZIP.inflate)(data);
+            bdata = new InputBuffer({
+                buffer: outData,
+            });
+        }
+        else if (this._compression === TiffImage.COMPRESSION_NONE) {
+            bdata = p;
+        }
+        else {
+            throw new ImageError(`Unsupported Compression Type: ${this._compression}`);
+        }
+        const br = new TiffBitReader(bdata);
+        const white = this._isWhiteZero ? 0xff000000 : 0xffffffff;
+        const black = this._isWhiteZero ? 0xffffffff : 0xff000000;
+        const img = this.image;
+        for (let y = 0, py = outY; y < this._tileHeight; ++y, ++py) {
+            for (let x = 0, px = outX; x < this._tileWidth; ++x, ++px) {
+                if (py >= img.height || px >= img.width)
+                    break;
+                if (br.readBits(1) === 0) {
+                    img.setPixel(px, py, black);
+                }
+                else {
+                    img.setPixel(px, py, white);
+                }
+            }
+            br.flushByte();
+        }
+    }
+    decodeTile(p, tileX, tileY) {
+        var _a;
+        if (this._imageType === TiffImage.TYPE_BILEVEL) {
+            this.decodeBilevelTile(p, tileX, tileY);
+            return;
+        }
+        const tileIndex = tileY * this._tilesX + tileX;
+        p.offset = this._tileOffsets[tileIndex];
+        const outX = tileX * this._tileWidth;
+        const outY = tileY * this._tileHeight;
+        const byteCount = this._tileByteCounts[tileIndex];
+        let bytesInThisTile = this._tileWidth * this._tileHeight * this._samplesPerPixel;
+        if (this._bitsPerSample === 16) {
+            bytesInThisTile *= 2;
+        }
+        else if (this._bitsPerSample === 32) {
+            bytesInThisTile *= 4;
+        }
+        let bdata = undefined;
+        if (this._bitsPerSample === 8 ||
+            this._bitsPerSample === 16 ||
+            this._bitsPerSample === 32 ||
+            this._bitsPerSample === 64) {
+            if (this._compression === TiffImage.COMPRESSION_NONE) {
+                bdata = p;
+            }
+            else if (this._compression === TiffImage.COMPRESSION_LZW) {
+                bdata = new InputBuffer({
+                    buffer: new Uint8Array(bytesInThisTile),
+                });
+                const decoder = new LzwDecoder();
+                try {
+                    decoder.decode(InputBuffer.from(p, 0, byteCount), bdata.buffer);
+                }
+                catch (e) {
+                    console.error(e);
+                }
+                if (this._predictor === 2) {
+                    let count = 0;
+                    for (let j = 0; j < this._tileHeight; j++) {
+                        count = this._samplesPerPixel * (j * this._tileWidth + 1);
+                        for (let i = this._samplesPerPixel, len = this._tileWidth * this._samplesPerPixel; i < len; i++) {
+                            const b = bdata.getByte(count) +
+                                bdata.getByte(count - this._samplesPerPixel);
+                            bdata.setByte(count, b);
+                            count++;
+                        }
+                    }
+                }
+            }
+            else if (this._compression === TiffImage.COMPRESSION_PACKBITS) {
+                bdata = new InputBuffer({
+                    buffer: new Uint8Array(bytesInThisTile),
+                });
+                this.decodePackbits(p, bytesInThisTile, bdata.buffer);
+            }
+            else if (this._compression === TiffImage.COMPRESSION_DEFLATE) {
+                const data = p.toUint8Array(0, byteCount);
+                const outData = (0,UZIP.inflate)(data);
+                bdata = new InputBuffer({
+                    buffer: outData,
+                });
+            }
+            else if (this._compression === TiffImage.COMPRESSION_ZIP) {
+                const data = p.toUint8Array(0, byteCount);
+                const outData = (0,UZIP.inflate)(data);
+                bdata = new InputBuffer({
+                    buffer: outData,
+                });
+            }
+            else if (this._compression === TiffImage.COMPRESSION_OLD_JPEG) {
+                (_a = this.image) !== null && _a !== void 0 ? _a : (this.image = new MemoryImage({
+                    width: this._width,
+                    height: this._height,
+                }));
+                const data = p.toUint8Array(0, byteCount);
+                const tile = new JpegDecoder().decodeImage(data);
+                if (tile !== undefined) {
+                    this.jpegToImage(tile, this.image, outX, outY, this._tileWidth, this._tileHeight);
+                }
+                if (this.hdrImage !== undefined) {
+                    this.hdrImage = HdrImage.fromImage(this.image);
+                }
+                return;
+            }
+            else {
+                throw new ImageError(`Unsupported Compression Type: ${this._compression}`);
+            }
+            for (let y = 0, py = outY; y < this._tileHeight && py < this._height; ++y, ++py) {
+                for (let x = 0, px = outX; x < this._tileWidth && px < this._width; ++x, ++px) {
+                    if (this._samplesPerPixel === 1) {
+                        if (this._sampleFormat === TiffImage.FORMAT_FLOAT) {
+                            let sample = 0.0;
+                            if (this._bitsPerSample === 32) {
+                                sample = bdata.readFloat32();
+                            }
+                            else if (this._bitsPerSample === 64) {
+                                sample = bdata.readFloat64();
+                            }
+                            else if (this._bitsPerSample === 16) {
+                                sample = Half.halfToDouble(bdata.readUint16());
+                            }
+                            if (this.hdrImage !== undefined) {
+                                this.hdrImage.setRed(px, py, sample);
+                            }
+                            if (this.image !== undefined) {
+                                const gray = MathOperators.clampInt255(sample * 255);
+                                let c = 0;
+                                if (this._photometricType === 3 &&
+                                    this._colorMap !== undefined) {
+                                    c = color_Color.getColor(this._colorMap[this.colorMapRed + gray], this._colorMap[this.colorMapGreen + gray], this._colorMap[this.colorMapBlue + gray]);
+                                }
+                                else {
+                                    c = color_Color.getColor(gray, gray, gray);
+                                }
+                                this.image.setPixel(px, py, c);
+                            }
+                        }
+                        else {
+                            let gray = 0;
+                            if (this._bitsPerSample === 8) {
+                                gray =
+                                    this._sampleFormat === TiffImage.FORMAT_INT
+                                        ? bdata.readInt8()
+                                        : bdata.readByte();
+                            }
+                            else if (this._bitsPerSample === 16) {
+                                gray =
+                                    this._sampleFormat === TiffImage.FORMAT_INT
+                                        ? bdata.readInt16()
+                                        : bdata.readUint16();
+                            }
+                            else if (this._bitsPerSample === 32) {
+                                gray =
+                                    this._sampleFormat === TiffImage.FORMAT_INT
+                                        ? bdata.readInt32()
+                                        : bdata.readUint32();
+                            }
+                            if (this.hdrImage !== undefined) {
+                                this.hdrImage.setRed(px, py, gray);
+                            }
+                            if (this.image !== undefined) {
+                                gray =
+                                    this._bitsPerSample === 16
+                                        ? gray >> 8
+                                        : this._bitsPerSample === 32
+                                            ? gray >> 24
+                                            : gray;
+                                if (this._photometricType === 0) {
+                                    gray = 255 - gray;
+                                }
+                                let c = 0;
+                                if (this._photometricType === 3 &&
+                                    this._colorMap !== undefined) {
+                                    c = color_Color.getColor(this._colorMap[this.colorMapRed + gray], this._colorMap[this.colorMapGreen + gray], this._colorMap[this.colorMapBlue + gray]);
+                                }
+                                else {
+                                    c = color_Color.getColor(gray, gray, gray);
+                                }
+                                this.image.setPixel(px, py, c);
+                            }
+                        }
+                    }
+                    else if (this._samplesPerPixel === 2) {
+                        let gray = 0;
+                        let alpha = 0;
+                        if (this._bitsPerSample === 8) {
+                            gray =
+                                this._sampleFormat === TiffImage.FORMAT_INT
+                                    ? bdata.readInt8()
+                                    : bdata.readByte();
+                            alpha =
+                                this._sampleFormat === TiffImage.FORMAT_INT
+                                    ? bdata.readInt8()
+                                    : bdata.readByte();
+                        }
+                        else if (this._bitsPerSample === 16) {
+                            gray =
+                                this._sampleFormat === TiffImage.FORMAT_INT
+                                    ? bdata.readInt16()
+                                    : bdata.readUint16();
+                            alpha =
+                                this._sampleFormat === TiffImage.FORMAT_INT
+                                    ? bdata.readInt16()
+                                    : bdata.readUint16();
+                        }
+                        else if (this._bitsPerSample === 32) {
+                            gray =
+                                this._sampleFormat === TiffImage.FORMAT_INT
+                                    ? bdata.readInt32()
+                                    : bdata.readUint32();
+                            alpha =
+                                this._sampleFormat === TiffImage.FORMAT_INT
+                                    ? bdata.readInt32()
+                                    : bdata.readUint32();
+                        }
+                        if (this.hdrImage !== undefined) {
+                            this.hdrImage.setRed(px, py, gray);
+                            this.hdrImage.setGreen(px, py, alpha);
+                        }
+                        if (this.image !== undefined) {
+                            gray =
+                                this._bitsPerSample === 16
+                                    ? gray >> 8
+                                    : this._bitsPerSample === 32
+                                        ? gray >> 24
+                                        : gray;
+                            alpha =
+                                this._bitsPerSample === 16
+                                    ? alpha >> 8
+                                    : this._bitsPerSample === 32
+                                        ? alpha >> 24
+                                        : alpha;
+                            const c = color_Color.getColor(gray, gray, gray, alpha);
+                            this.image.setPixel(px, py, c);
+                        }
+                    }
+                    else if (this._samplesPerPixel === 3) {
+                        if (this._sampleFormat === TiffImage.FORMAT_FLOAT) {
+                            let r = 0.0;
+                            let g = 0.0;
+                            let b = 0.0;
+                            if (this._bitsPerSample === 32) {
+                                r = bdata.readFloat32();
+                                g = bdata.readFloat32();
+                                b = bdata.readFloat32();
+                            }
+                            else if (this._bitsPerSample === 64) {
+                                r = bdata.readFloat64();
+                                g = bdata.readFloat64();
+                                b = bdata.readFloat64();
+                            }
+                            else if (this._bitsPerSample === 16) {
+                                r = Half.halfToDouble(bdata.readUint16());
+                                g = Half.halfToDouble(bdata.readUint16());
+                                b = Half.halfToDouble(bdata.readUint16());
+                            }
+                            if (this.hdrImage !== undefined) {
+                                this.hdrImage.setRed(px, py, r);
+                                this.hdrImage.setGreen(px, py, g);
+                                this.hdrImage.setBlue(px, py, b);
+                            }
+                            if (this.image !== undefined) {
+                                const ri = MathOperators.clampInt255(r * 255);
+                                const gi = MathOperators.clampInt255(g * 255);
+                                const bi = MathOperators.clampInt255(b * 255);
+                                const c = color_Color.getColor(ri, gi, bi);
+                                this.image.setPixel(px, py, c);
+                            }
+                        }
+                        else {
+                            let r = 0;
+                            let g = 0;
+                            let b = 0;
+                            if (this._bitsPerSample === 8) {
+                                r =
+                                    this._sampleFormat === TiffImage.FORMAT_INT
+                                        ? bdata.readInt8()
+                                        : bdata.readByte();
+                                g =
+                                    this._sampleFormat === TiffImage.FORMAT_INT
+                                        ? bdata.readInt8()
+                                        : bdata.readByte();
+                                b =
+                                    this._sampleFormat === TiffImage.FORMAT_INT
+                                        ? bdata.readInt8()
+                                        : bdata.readByte();
+                            }
+                            else if (this._bitsPerSample === 16) {
+                                r =
+                                    this._sampleFormat === TiffImage.FORMAT_INT
+                                        ? bdata.readInt16()
+                                        : bdata.readUint16();
+                                g =
+                                    this._sampleFormat === TiffImage.FORMAT_INT
+                                        ? bdata.readInt16()
+                                        : bdata.readUint16();
+                                b =
+                                    this._sampleFormat === TiffImage.FORMAT_INT
+                                        ? bdata.readInt16()
+                                        : bdata.readUint16();
+                            }
+                            else if (this._bitsPerSample === 32) {
+                                r =
+                                    this._sampleFormat === TiffImage.FORMAT_INT
+                                        ? bdata.readInt32()
+                                        : bdata.readUint32();
+                                g =
+                                    this._sampleFormat === TiffImage.FORMAT_INT
+                                        ? bdata.readInt32()
+                                        : bdata.readUint32();
+                                b =
+                                    this._sampleFormat === TiffImage.FORMAT_INT
+                                        ? bdata.readInt32()
+                                        : bdata.readUint32();
+                            }
+                            if (this.hdrImage !== undefined) {
+                                this.hdrImage.setRed(px, py, r);
+                                this.hdrImage.setGreen(px, py, g);
+                                this.hdrImage.setBlue(px, py, b);
+                            }
+                            if (this.image !== undefined) {
+                                r =
+                                    this._bitsPerSample === 16
+                                        ? r >> 8
+                                        : this._bitsPerSample === 32
+                                            ? r >> 24
+                                            : r;
+                                g =
+                                    this._bitsPerSample === 16
+                                        ? g >> 8
+                                        : this._bitsPerSample === 32
+                                            ? g >> 24
+                                            : g;
+                                b =
+                                    this._bitsPerSample === 16
+                                        ? b >> 8
+                                        : this._bitsPerSample === 32
+                                            ? b >> 24
+                                            : b;
+                                const c = color_Color.getColor(r, g, b);
+                                this.image.setPixel(px, py, c);
+                            }
+                        }
+                    }
+                    else if (this._samplesPerPixel >= 4) {
+                        if (this._sampleFormat === TiffImage.FORMAT_FLOAT) {
+                            let r = 0.0;
+                            let g = 0.0;
+                            let b = 0.0;
+                            let a = 0.0;
+                            if (this._bitsPerSample === 32) {
+                                r = bdata.readFloat32();
+                                g = bdata.readFloat32();
+                                b = bdata.readFloat32();
+                                a = bdata.readFloat32();
+                            }
+                            else if (this._bitsPerSample === 64) {
+                                r = bdata.readFloat64();
+                                g = bdata.readFloat64();
+                                b = bdata.readFloat64();
+                                a = bdata.readFloat64();
+                            }
+                            else if (this._bitsPerSample === 16) {
+                                r = Half.halfToDouble(bdata.readUint16());
+                                g = Half.halfToDouble(bdata.readUint16());
+                                b = Half.halfToDouble(bdata.readUint16());
+                                a = Half.halfToDouble(bdata.readUint16());
+                            }
+                            if (this.hdrImage !== undefined) {
+                                this.hdrImage.setRed(px, py, r);
+                                this.hdrImage.setGreen(px, py, g);
+                                this.hdrImage.setBlue(px, py, b);
+                                this.hdrImage.setAlpha(px, py, a);
+                            }
+                            if (this.image !== undefined) {
+                                const ri = MathOperators.clampInt255(r * 255);
+                                const gi = MathOperators.clampInt255(g * 255);
+                                const bi = MathOperators.clampInt255(b * 255);
+                                const ai = MathOperators.clampInt255(a * 255);
+                                const c = color_Color.getColor(ri, gi, bi, ai);
+                                this.image.setPixel(px, py, c);
+                            }
+                        }
+                        else {
+                            let r = 0;
+                            let g = 0;
+                            let b = 0;
+                            let a = 0;
+                            if (this._bitsPerSample === 8) {
+                                r =
+                                    this._sampleFormat === TiffImage.FORMAT_INT
+                                        ? bdata.readInt8()
+                                        : bdata.readByte();
+                                g =
+                                    this._sampleFormat === TiffImage.FORMAT_INT
+                                        ? bdata.readInt8()
+                                        : bdata.readByte();
+                                b =
+                                    this._sampleFormat === TiffImage.FORMAT_INT
+                                        ? bdata.readInt8()
+                                        : bdata.readByte();
+                                a =
+                                    this._sampleFormat === TiffImage.FORMAT_INT
+                                        ? bdata.readInt8()
+                                        : bdata.readByte();
+                            }
+                            else if (this._bitsPerSample === 16) {
+                                r =
+                                    this._sampleFormat === TiffImage.FORMAT_INT
+                                        ? bdata.readInt16()
+                                        : bdata.readUint16();
+                                g =
+                                    this._sampleFormat === TiffImage.FORMAT_INT
+                                        ? bdata.readInt16()
+                                        : bdata.readUint16();
+                                b =
+                                    this._sampleFormat === TiffImage.FORMAT_INT
+                                        ? bdata.readInt16()
+                                        : bdata.readUint16();
+                                a =
+                                    this._sampleFormat === TiffImage.FORMAT_INT
+                                        ? bdata.readInt16()
+                                        : bdata.readUint16();
+                            }
+                            else if (this._bitsPerSample === 32) {
+                                r =
+                                    this._sampleFormat === TiffImage.FORMAT_INT
+                                        ? bdata.readInt32()
+                                        : bdata.readUint32();
+                                g =
+                                    this._sampleFormat === TiffImage.FORMAT_INT
+                                        ? bdata.readInt32()
+                                        : bdata.readUint32();
+                                b =
+                                    this._sampleFormat === TiffImage.FORMAT_INT
+                                        ? bdata.readInt32()
+                                        : bdata.readUint32();
+                                a =
+                                    this._sampleFormat === TiffImage.FORMAT_INT
+                                        ? bdata.readInt32()
+                                        : bdata.readUint32();
+                            }
+                            if (this.hdrImage !== undefined) {
+                                this.hdrImage.setRed(px, py, r);
+                                this.hdrImage.setGreen(px, py, g);
+                                this.hdrImage.setBlue(px, py, b);
+                                this.hdrImage.setAlpha(px, py, a);
+                            }
+                            if (this.image !== undefined) {
+                                r =
+                                    this._bitsPerSample === 16
+                                        ? r >> 8
+                                        : this._bitsPerSample === 32
+                                            ? r >> 24
+                                            : r;
+                                g =
+                                    this._bitsPerSample === 16
+                                        ? g >> 8
+                                        : this._bitsPerSample === 32
+                                            ? g >> 24
+                                            : g;
+                                b =
+                                    this._bitsPerSample === 16
+                                        ? b >> 8
+                                        : this._bitsPerSample === 32
+                                            ? b >> 24
+                                            : b;
+                                a =
+                                    this._bitsPerSample === 16
+                                        ? a >> 8
+                                        : this._bitsPerSample === 32
+                                            ? a >> 24
+                                            : a;
+                                const c = color_Color.getColor(r, g, b, a);
+                                this.image.setPixel(px, py, c);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        else {
+            throw new ImageError(`Unsupported bitsPerSample: ${this._bitsPerSample}`);
+        }
+    }
+    jpegToImage(tile, image, outX, outY, tileWidth, tileHeight) {
+        const width = tileWidth;
+        const height = tileHeight;
+        for (let y = 0; y < height; y++) {
+            for (let x = 0; x < width; x++) {
+                image.setPixel(x + outX, y + outY, tile.getPixel(x, y));
+            }
+        }
+    }
+    decodePackbits(data, arraySize, dst) {
+        let srcCount = 0;
+        let dstCount = 0;
+        while (dstCount < arraySize) {
+            const b = BitOperators.toInt8(data.getByte(srcCount++));
+            if (b >= 0 && b <= 127) {
+                for (let i = 0; i < b + 1; ++i) {
+                    dst[dstCount++] = data.getByte(srcCount++);
+                }
+            }
+            else if (b <= -1 && b >= -127) {
+                const repeat = data.getByte(srcCount++);
+                for (let i = 0; i < -b + 1; ++i) {
+                    dst[dstCount++] = repeat;
+                }
+            }
+            else {
+                srcCount++;
+            }
+        }
+    }
+    decode(p) {
+        this.image = new MemoryImage({
+            width: this._width,
+            height: this._height,
+        });
+        for (let tileY = 0, ti = 0; tileY < this._tilesY; ++tileY) {
+            for (let tileX = 0; tileX < this._tilesX; ++tileX, ++ti) {
+                this.decodeTile(p, tileX, tileY);
+            }
+        }
+        return this.image;
+    }
+    decodeHdr(p) {
+        this.hdrImage = HdrImage.create(this._width, this._height, this._samplesPerPixel, this._sampleFormat === TiffImage.FORMAT_UINT
+            ? HdrSlice.UINT
+            : this._sampleFormat === TiffImage.FORMAT_INT
+                ? HdrSlice.INT
+                : HdrSlice.FLOAT, this._bitsPerSample);
+        for (let tileY = 0, ti = 0; tileY < this._tilesY; ++tileY) {
+            for (let tileX = 0; tileX < this._tilesX; ++tileX, ++ti) {
+                this.decodeTile(p, tileX, tileY);
+            }
+        }
+        return this.hdrImage;
+    }
+    hasTag(tag) {
+        return this._tags.has(tag);
+    }
+}
+TiffImage.COMPRESSION_NONE = 1;
+TiffImage.COMPRESSION_CCITT_RLE = 2;
+TiffImage.COMPRESSION_CCITT_FAX3 = 3;
+TiffImage.COMPRESSION_CCITT_FAX4 = 4;
+TiffImage.COMPRESSION_LZW = 5;
+TiffImage.COMPRESSION_OLD_JPEG = 6;
+TiffImage.COMPRESSION_JPEG = 7;
+TiffImage.COMPRESSION_NEXT = 32766;
+TiffImage.COMPRESSION_CCITT_RLEW = 32771;
+TiffImage.COMPRESSION_PACKBITS = 32773;
+TiffImage.COMPRESSION_THUNDERSCAN = 32809;
+TiffImage.COMPRESSION_IT8CTPAD = 32895;
+TiffImage.COMPRESSION_IT8LW = 32896;
+TiffImage.COMPRESSION_IT8MP = 32897;
+TiffImage.COMPRESSION_IT8BL = 32898;
+TiffImage.COMPRESSION_PIXARFILM = 32908;
+TiffImage.COMPRESSION_PIXARLOG = 32909;
+TiffImage.COMPRESSION_DEFLATE = 32946;
+TiffImage.COMPRESSION_ZIP = 8;
+TiffImage.COMPRESSION_DCS = 32947;
+TiffImage.COMPRESSION_JBIG = 34661;
+TiffImage.COMPRESSION_SGILOG = 34676;
+TiffImage.COMPRESSION_SGILOG24 = 34677;
+TiffImage.COMPRESSION_JP2000 = 34712;
+TiffImage.PHOTOMETRIC_BLACKISZERO = 1;
+TiffImage.PHOTOMETRIC_RGB = 2;
+TiffImage.TYPE_UNSUPPORTED = -1;
+TiffImage.TYPE_BILEVEL = 0;
+TiffImage.TYPE_GRAY_4BIT = 1;
+TiffImage.TYPE_GRAY = 2;
+TiffImage.TYPE_GRAY_ALPHA = 3;
+TiffImage.TYPE_PALETTE = 4;
+TiffImage.TYPE_RGB = 5;
+TiffImage.TYPE_RGB_ALPHA = 6;
+TiffImage.TYPE_YCBCR_SUB = 7;
+TiffImage.TYPE_GENERIC = 8;
+TiffImage.FORMAT_UINT = 1;
+TiffImage.FORMAT_INT = 2;
+TiffImage.FORMAT_FLOAT = 3;
+TiffImage.TAG_ARTIST = 315;
+TiffImage.TAG_BITS_PER_SAMPLE = 258;
+TiffImage.TAG_CELL_LENGTH = 265;
+TiffImage.TAG_CELL_WIDTH = 264;
+TiffImage.TAG_COLOR_MAP = 320;
+TiffImage.TAG_COMPRESSION = 259;
+TiffImage.TAG_DATE_TIME = 306;
+TiffImage.TAG_EXIF_IFD = 34665;
+TiffImage.TAG_EXTRA_SAMPLES = 338;
+TiffImage.TAG_FILL_ORDER = 266;
+TiffImage.TAG_FREE_BYTE_COUNTS = 289;
+TiffImage.TAG_FREE_OFFSETS = 288;
+TiffImage.TAG_GRAY_RESPONSE_CURVE = 291;
+TiffImage.TAG_GRAY_RESPONSE_UNIT = 290;
+TiffImage.TAG_HOST_COMPUTER = 316;
+TiffImage.TAG_ICC_PROFILE = 34675;
+TiffImage.TAG_IMAGE_DESCRIPTION = 270;
+TiffImage.TAG_IMAGE_LENGTH = 257;
+TiffImage.TAG_IMAGE_WIDTH = 256;
+TiffImage.TAG_IPTC = 33723;
+TiffImage.TAG_MAKE = 271;
+TiffImage.TAG_MAX_SAMPLE_VALUE = 281;
+TiffImage.TAG_MIN_SAMPLE_VALUE = 280;
+TiffImage.TAG_MODEL = 272;
+TiffImage.TAG_NEW_SUBFILE_TYPE = 254;
+TiffImage.TAG_ORIENTATION = 274;
+TiffImage.TAG_PHOTOMETRIC_INTERPRETATION = 262;
+TiffImage.TAG_PHOTOSHOP = 34377;
+TiffImage.TAG_PLANAR_CONFIGURATION = 284;
+TiffImage.TAG_PREDICTOR = 317;
+TiffImage.TAG_RESOLUTION_UNIT = 296;
+TiffImage.TAG_ROWS_PER_STRIP = 278;
+TiffImage.TAG_SAMPLES_PER_PIXEL = 277;
+TiffImage.TAG_SOFTWARE = 305;
+TiffImage.TAG_STRIP_BYTE_COUNTS = 279;
+TiffImage.TAG_STRIP_OFFSETS = 273;
+TiffImage.TAG_SUBFILE_TYPE = 255;
+TiffImage.TAG_T4_OPTIONS = 292;
+TiffImage.TAG_T6_OPTIONS = 293;
+TiffImage.TAG_THRESHOLDING = 263;
+TiffImage.TAG_TILE_WIDTH = 322;
+TiffImage.TAG_TILE_LENGTH = 323;
+TiffImage.TAG_TILE_OFFSETS = 324;
+TiffImage.TAG_TILE_BYTE_COUNTS = 325;
+TiffImage.TAG_SAMPLE_FORMAT = 339;
+TiffImage.TAG_XMP = 700;
+TiffImage.TAG_X_RESOLUTION = 282;
+TiffImage.TAG_Y_RESOLUTION = 283;
+TiffImage.TAG_YCBCR_COEFFICIENTS = 529;
+TiffImage.TAG_YCBCR_SUBSAMPLING = 530;
+TiffImage.TAG_YCBCR_POSITIONING = 531;
+TiffImage.TAG_NAME = new Map([
+    [TiffImage.TAG_ARTIST, 'artist'],
+    [TiffImage.TAG_BITS_PER_SAMPLE, 'bitsPerSample'],
+    [TiffImage.TAG_CELL_LENGTH, 'cellLength'],
+    [TiffImage.TAG_CELL_WIDTH, 'cellWidth'],
+    [TiffImage.TAG_COLOR_MAP, 'colorMap'],
+    [TiffImage.TAG_COMPRESSION, 'compression'],
+    [TiffImage.TAG_DATE_TIME, 'dateTime'],
+    [TiffImage.TAG_EXIF_IFD, 'exifIFD'],
+    [TiffImage.TAG_EXTRA_SAMPLES, 'extraSamples'],
+    [TiffImage.TAG_FILL_ORDER, 'fillOrder'],
+    [TiffImage.TAG_FREE_BYTE_COUNTS, 'freeByteCounts'],
+    [TiffImage.TAG_FREE_OFFSETS, 'freeOffsets'],
+    [TiffImage.TAG_GRAY_RESPONSE_CURVE, 'grayResponseCurve'],
+    [TiffImage.TAG_GRAY_RESPONSE_UNIT, 'grayResponseUnit'],
+    [TiffImage.TAG_HOST_COMPUTER, 'hostComputer'],
+    [TiffImage.TAG_ICC_PROFILE, 'iccProfile'],
+    [TiffImage.TAG_IMAGE_DESCRIPTION, 'imageDescription'],
+    [TiffImage.TAG_IMAGE_LENGTH, 'imageLength'],
+    [TiffImage.TAG_IMAGE_WIDTH, 'imageWidth'],
+    [TiffImage.TAG_IPTC, 'iptc'],
+    [TiffImage.TAG_MAKE, 'make'],
+    [TiffImage.TAG_MAX_SAMPLE_VALUE, 'maxSampleValue'],
+    [TiffImage.TAG_MIN_SAMPLE_VALUE, 'minSampleValue'],
+    [TiffImage.TAG_MODEL, 'model'],
+    [TiffImage.TAG_NEW_SUBFILE_TYPE, 'newSubfileType'],
+    [TiffImage.TAG_ORIENTATION, 'orientation'],
+    [TiffImage.TAG_PHOTOMETRIC_INTERPRETATION, 'photometricInterpretation'],
+    [TiffImage.TAG_PHOTOSHOP, 'photoshop'],
+    [TiffImage.TAG_PLANAR_CONFIGURATION, 'planarConfiguration'],
+    [TiffImage.TAG_PREDICTOR, 'predictor'],
+    [TiffImage.TAG_RESOLUTION_UNIT, 'resolutionUnit'],
+    [TiffImage.TAG_ROWS_PER_STRIP, 'rowsPerStrip'],
+    [TiffImage.TAG_SAMPLES_PER_PIXEL, 'samplesPerPixel'],
+    [TiffImage.TAG_SOFTWARE, 'software'],
+    [TiffImage.TAG_STRIP_BYTE_COUNTS, 'stripByteCounts'],
+    [TiffImage.TAG_STRIP_OFFSETS, 'stropOffsets'],
+    [TiffImage.TAG_SUBFILE_TYPE, 'subfileType'],
+    [TiffImage.TAG_T4_OPTIONS, 't4Options'],
+    [TiffImage.TAG_T6_OPTIONS, 't6Options'],
+    [TiffImage.TAG_THRESHOLDING, 'thresholding'],
+    [TiffImage.TAG_TILE_WIDTH, 'tileWidth'],
+    [TiffImage.TAG_TILE_LENGTH, 'tileLength'],
+    [TiffImage.TAG_TILE_OFFSETS, 'tileOffsets'],
+    [TiffImage.TAG_TILE_BYTE_COUNTS, 'tileByteCounts'],
+    [TiffImage.TAG_XMP, 'xmp'],
+    [TiffImage.TAG_X_RESOLUTION, 'xResolution'],
+    [TiffImage.TAG_Y_RESOLUTION, 'yResolution'],
+    [TiffImage.TAG_YCBCR_COEFFICIENTS, 'yCbCrCoefficients'],
+    [TiffImage.TAG_YCBCR_SUBSAMPLING, 'yCbCrSubsampling'],
+    [TiffImage.TAG_YCBCR_POSITIONING, 'yCbCrPositioning'],
+    [TiffImage.TAG_SAMPLE_FORMAT, 'sampleFormat'],
+]);
+//# sourceMappingURL=tiff-image.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/formats/tiff/tiff-info.js
+class TiffInfo {
+    constructor(options) {
+        this._images = [];
+        this._width = 0;
+        this._height = 0;
+        this._backgroundColor = 0xffffffff;
+        this._bigEndian = options.bigEndian;
+        this._signature = options.signature;
+        this._ifdOffset = options.ifdOffset;
+        this._images = options.images;
+        if (this._images.length > 0) {
+            this._width = this._images[0].width;
+            this._height = this._images[0].height;
+        }
+    }
+    get bigEndian() {
+        return this._bigEndian;
+    }
+    get signature() {
+        return this._signature;
+    }
+    get ifdOffset() {
+        return this._ifdOffset;
+    }
+    get images() {
+        return this._images;
+    }
+    get width() {
+        return this._width;
+    }
+    get height() {
+        return this._height;
+    }
+    get backgroundColor() {
+        throw this._backgroundColor;
+    }
+    get numFrames() {
+        return this._images.length;
+    }
+}
+//# sourceMappingURL=tiff-info.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/formats/tiff-decoder.js
+
+
+
+
+
+
+class TiffDecoder {
+    constructor() {
+        this._info = undefined;
+        this._exifData = undefined;
+    }
+    get info() {
+        return this._info;
+    }
+    get exifData() {
+        return this._exifData;
+    }
+    get numFrames() {
+        return this._info !== undefined ? this._info.images.length : 0;
+    }
+    readHeader(p) {
+        const byteOrder = p.readUint16();
+        if (byteOrder !== TiffDecoder.TIFF_LITTLE_ENDIAN &&
+            byteOrder !== TiffDecoder.TIFF_BIG_ENDIAN) {
+            return undefined;
+        }
+        let bigEndian = false;
+        if (byteOrder === TiffDecoder.TIFF_BIG_ENDIAN) {
+            p.bigEndian = true;
+            bigEndian = true;
+        }
+        else {
+            p.bigEndian = false;
+            bigEndian = false;
+        }
+        let signature = 0;
+        signature = p.readUint16();
+        if (signature !== TiffDecoder.TIFF_SIGNATURE) {
+            return undefined;
+        }
+        let offset = p.readUint32();
+        const p2 = InputBuffer.from(p);
+        p2.offset = offset;
+        const images = [];
+        while (offset !== 0) {
+            let img = undefined;
+            try {
+                img = new TiffImage(p2);
+                if (!img.isValid) {
+                    break;
+                }
+            }
+            catch (error) {
+                break;
+            }
+            images.push(img);
+            offset = p2.readUint32();
+            if (offset !== 0) {
+                p2.offset = offset;
+            }
+        }
+        return images.length > 0
+            ? new TiffInfo({
+                bigEndian: bigEndian,
+                signature: signature,
+                ifdOffset: offset,
+                images: images,
+            })
+            : undefined;
+    }
+    isValidFile(bytes) {
+        const buffer = new InputBuffer({
+            buffer: bytes,
+        });
+        return this.readHeader(buffer) !== undefined;
+    }
+    startDecode(bytes) {
+        this.input = new InputBuffer({
+            buffer: bytes,
+        });
+        this._info = this.readHeader(this.input);
+        if (this.info !== undefined) {
+            const buffer = new InputBuffer({
+                buffer: bytes,
+            });
+            this._exifData = ExifData.fromInputBuffer(buffer);
+        }
+        return this._info;
+    }
+    decodeFrame(frame) {
+        if (this._info === undefined) {
+            return undefined;
+        }
+        const image = this._info.images[frame].decode(this.input);
+        if (this._exifData !== undefined) {
+            image.exifData = this._exifData;
+        }
+        return image;
+    }
+    decodeHdrFrame(frame) {
+        if (this._info === undefined) {
+            return undefined;
+        }
+        return this._info.images[frame].decodeHdr(this.input);
+    }
+    decodeAnimation(bytes) {
+        if (this.startDecode(bytes) === undefined) {
+            return undefined;
+        }
+        const animation = new FrameAnimation({
+            width: this._info.width,
+            height: this._info.height,
+            frameType: FrameType.page,
+        });
+        for (let i = 0, len = this.numFrames; i < len; ++i) {
+            const image = this.decodeFrame(i);
+            animation.addFrame(image);
+        }
+        return animation;
+    }
+    decodeImage(bytes, frame = 0) {
+        this.input = new InputBuffer({
+            buffer: bytes,
+        });
+        this._info = this.readHeader(this.input);
+        if (this._info === undefined) {
+            return undefined;
+        }
+        const image = this._info.images[frame].decode(this.input);
+        const buffer = new InputBuffer({
+            buffer: bytes,
+        });
+        image.exifData = ExifData.fromInputBuffer(buffer);
+        return image;
+    }
+    decodeHdrImage(bytes, frame = 0) {
+        this.input = new InputBuffer({
+            buffer: bytes,
+        });
+        this._info = this.readHeader(this.input);
+        if (this._info === undefined) {
+            return undefined;
+        }
+        const image = this._info.images[frame].decodeHdr(this.input);
+        const buffer = new InputBuffer({
+            buffer: bytes,
+        });
+        image.exifData = ExifData.fromInputBuffer(buffer);
+        return image;
+    }
+}
+TiffDecoder.TIFF_SIGNATURE = 42;
+TiffDecoder.TIFF_LITTLE_ENDIAN = 0x4949;
+TiffDecoder.TIFF_BIG_ENDIAN = 0x4d4d;
+//# sourceMappingURL=tiff-decoder.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/formats/tiff-encoder.js
+
+
+
+
+class TiffEncoder {
+    constructor() {
+        this._supportsAnimation = false;
+    }
+    get supportsAnimation() {
+        return this._supportsAnimation;
+    }
+    writeHeader(out) {
+        out.writeUint16(TiffEncoder.LITTLE_ENDIAN);
+        out.writeUint16(TiffEncoder.SIGNATURE);
+        out.writeUint32(8);
+    }
+    writeImage(out, image) {
+        out.writeUint16(11);
+        this.writeEntryUint32(out, TiffImage.TAG_IMAGE_WIDTH, image.width);
+        this.writeEntryUint32(out, TiffImage.TAG_IMAGE_LENGTH, image.height);
+        this.writeEntryUint16(out, TiffImage.TAG_BITS_PER_SAMPLE, 8);
+        this.writeEntryUint16(out, TiffImage.TAG_COMPRESSION, TiffImage.COMPRESSION_NONE);
+        this.writeEntryUint16(out, TiffImage.TAG_PHOTOMETRIC_INTERPRETATION, TiffImage.PHOTOMETRIC_RGB);
+        this.writeEntryUint16(out, TiffImage.TAG_SAMPLES_PER_PIXEL, 4);
+        this.writeEntryUint16(out, TiffImage.TAG_SAMPLE_FORMAT, TiffImage.FORMAT_UINT);
+        this.writeEntryUint32(out, TiffImage.TAG_ROWS_PER_STRIP, image.height);
+        this.writeEntryUint16(out, TiffImage.TAG_PLANAR_CONFIGURATION, 1);
+        this.writeEntryUint32(out, TiffImage.TAG_STRIP_BYTE_COUNTS, image.width * image.height * 4);
+        this.writeEntryUint32(out, TiffImage.TAG_STRIP_OFFSETS, out.length + 4);
+        out.writeBytes(image.getBytes());
+    }
+    writeHdrImage(out, image) {
+        out.writeUint16(11);
+        this.writeEntryUint32(out, TiffImage.TAG_IMAGE_WIDTH, image.width);
+        this.writeEntryUint32(out, TiffImage.TAG_IMAGE_LENGTH, image.height);
+        this.writeEntryUint16(out, TiffImage.TAG_BITS_PER_SAMPLE, image.bitsPerSample);
+        this.writeEntryUint16(out, TiffImage.TAG_COMPRESSION, TiffImage.COMPRESSION_NONE);
+        this.writeEntryUint16(out, TiffImage.TAG_PHOTOMETRIC_INTERPRETATION, image.numberOfChannels === 1
+            ? TiffImage.PHOTOMETRIC_BLACKISZERO
+            : TiffImage.PHOTOMETRIC_RGB);
+        this.writeEntryUint16(out, TiffImage.TAG_SAMPLES_PER_PIXEL, image.numberOfChannels);
+        this.writeEntryUint16(out, TiffImage.TAG_SAMPLE_FORMAT, this.getSampleFormat(image));
+        const bytesPerSample = Math.trunc(image.bitsPerSample / 8);
+        const imageSize = image.width * image.height * image.slices.size * bytesPerSample;
+        this.writeEntryUint32(out, TiffImage.TAG_ROWS_PER_STRIP, image.height);
+        this.writeEntryUint16(out, TiffImage.TAG_PLANAR_CONFIGURATION, 1);
+        this.writeEntryUint32(out, TiffImage.TAG_STRIP_BYTE_COUNTS, imageSize);
+        this.writeEntryUint32(out, TiffImage.TAG_STRIP_OFFSETS, out.length + 4);
+        const channels = [];
+        if (image.blue !== undefined) {
+            channels.push(image.blue.getBytes());
+        }
+        if (image.red !== undefined) {
+            channels.push(image.red.getBytes());
+        }
+        if (image.green !== undefined) {
+            channels.push(image.green.getBytes());
+        }
+        if (image.alpha !== undefined) {
+            channels.push(image.alpha.getBytes());
+        }
+        if (image.depth !== undefined) {
+            channels.push(image.depth.getBytes());
+        }
+        for (let y = 0, pi = 0; y < image.height; ++y) {
+            for (let x = 0; x < image.width; ++x, pi += bytesPerSample) {
+                for (let c = 0; c < channels.length; ++c) {
+                    const ch = channels[c];
+                    for (let b = 0; b < bytesPerSample; ++b) {
+                        out.writeByte(ch[pi + b]);
+                    }
+                }
+            }
+        }
+    }
+    getSampleFormat(image) {
+        switch (image.sampleFormat) {
+            case HdrSlice.UINT:
+                return TiffImage.FORMAT_UINT;
+            case HdrSlice.INT:
+                return TiffImage.FORMAT_INT;
+        }
+        return TiffImage.FORMAT_FLOAT;
+    }
+    writeEntryUint16(out, tag, data) {
+        out.writeUint16(tag);
+        out.writeUint16(TiffEntry.TYPE_SHORT);
+        out.writeUint32(1);
+        out.writeUint16(data);
+        out.writeUint16(0);
+    }
+    writeEntryUint32(out, tag, data) {
+        out.writeUint16(tag);
+        out.writeUint16(TiffEntry.TYPE_LONG);
+        out.writeUint32(1);
+        out.writeUint32(data);
+    }
+    encodeImage(image) {
+        const out = new OutputBuffer();
+        this.writeHeader(out);
+        this.writeImage(out, image);
+        out.writeUint32(0);
+        return out.getBytes();
+    }
+    encodeAnimation(_animation) {
+        return undefined;
+    }
+    encodeHdrImage(image) {
+        const out = new OutputBuffer();
+        this.writeHeader(out);
+        this.writeHdrImage(out, image);
+        out.writeUint32(0);
+        return out.getBytes();
+    }
+}
+TiffEncoder.LITTLE_ENDIAN = 0x4949;
+TiffEncoder.SIGNATURE = 42;
+//# sourceMappingURL=tiff-encoder.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/common/heap-node.js
+class HeapNode {
+    constructor() {
+        this._buf = [undefined];
+    }
+    get buf() {
+        return this._buf;
+    }
+    get n() {
+        return this._buf.length;
+    }
+}
+//# sourceMappingURL=heap-node.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/common/octree-node.js
+class OctreeNode {
+    constructor(childIndex, depth, parent) {
+        this._r = 0;
+        this._g = 0;
+        this._b = 0;
+        this._count = 0;
+        this._heapIndex = 0;
+        this._children = new Array(8).fill(undefined);
+        this._childCount = 0;
+        this._childIndex = 0;
+        this._flags = 0;
+        this._depth = 0;
+        this._childIndex = childIndex;
+        this._depth = depth;
+        this._parent = parent;
+        if (parent !== undefined) {
+            parent._childCount++;
+        }
+    }
+    get r() {
+        return this._r;
+    }
+    set r(v) {
+        this._r = v;
+    }
+    get g() {
+        return this._g;
+    }
+    set g(v) {
+        this._g = v;
+    }
+    get b() {
+        return this._b;
+    }
+    set b(v) {
+        this._b = v;
+    }
+    get count() {
+        return this._count;
+    }
+    set count(v) {
+        this._count = v;
+    }
+    get heapIndex() {
+        return this._heapIndex;
+    }
+    set heapIndex(v) {
+        this._heapIndex = v;
+    }
+    get parent() {
+        return this._parent;
+    }
+    get children() {
+        return this._children;
+    }
+    get childCount() {
+        return this._childCount;
+    }
+    set childCount(v) {
+        this._childCount = v;
+    }
+    get childIndex() {
+        return this._childIndex;
+    }
+    get flags() {
+        return this._flags;
+    }
+    set flags(v) {
+        this._flags = v;
+    }
+    get depth() {
+        return this._depth;
+    }
+}
+//# sourceMappingURL=octree-node.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/common/octree-quantizer.js
+
+
+
+class OctreeQuantizer {
+    constructor(image, numberOfColors = 256) {
+        this.root = new OctreeNode(0, 0);
+        const heap = new HeapNode();
+        for (let si = 0; si < image.length; ++si) {
+            const c = image.getPixelByIndex(si);
+            const r = color_Color.getRed(c);
+            const g = color_Color.getGreen(c);
+            const b = color_Color.getBlue(c);
+            this.heapAdd(heap, this.nodeInsert(this.root, r, g, b));
+        }
+        const nc = numberOfColors + 1;
+        while (heap.n > nc) {
+            this.heapAdd(heap, this.nodeFold(this.popHeap(heap)));
+        }
+        for (let i = 1; i < heap.n; i++) {
+            const got = heap.buf[i];
+            const c = got.count;
+            got.r = Math.round(got.r / c);
+            got.g = Math.round(got.g / c);
+            got.b = Math.round(got.b / c);
+        }
+    }
+    nodeInsert(root, r, g, b) {
+        let _root = root;
+        let depth = 0;
+        for (let bit = 1 << 7; ++depth < 8; bit >>= 1) {
+            const i = ((g & bit) !== 0 ? 1 : 0) * 4 +
+                ((r & bit) !== 0 ? 1 : 0) * 2 +
+                ((b & bit) !== 0 ? 1 : 0);
+            if (_root.children[i] === undefined) {
+                _root.children[i] = new OctreeNode(i, depth, _root);
+            }
+            _root = _root.children[i];
+        }
+        _root.r += r;
+        _root.g += g;
+        _root.b += b;
+        _root.count++;
+        return _root;
+    }
+    popHeap(h) {
+        if (h.n <= 1) {
+            return undefined;
+        }
+        const ret = h.buf[1];
+        h.buf[1] = h.buf.pop();
+        h.buf[1].heapIndex = 1;
+        this.downHeap(h, h.buf[1]);
+        return ret;
+    }
+    heapAdd(h, p) {
+        if ((p.flags & OctreeQuantizer.ON_INHEAP) !== 0) {
+            this.downHeap(h, p);
+            this.upHeap(h, p);
+            return;
+        }
+        p.flags |= OctreeQuantizer.ON_INHEAP;
+        p.heapIndex = h.n;
+        h.buf.push(p);
+        this.upHeap(h, p);
+    }
+    downHeap(h, p) {
+        let n = p.heapIndex;
+        while (true) {
+            let m = n * 2;
+            if (m >= h.n) {
+                break;
+            }
+            if (m + 1 < h.n && this.compareNode(h.buf[m], h.buf[m + 1]) > 0) {
+                m++;
+            }
+            if (this.compareNode(p, h.buf[m]) <= 0) {
+                break;
+            }
+            h.buf[n] = h.buf[m];
+            h.buf[n].heapIndex = n;
+            n = m;
+        }
+        h.buf[n] = p;
+        p.heapIndex = n;
+    }
+    upHeap(h, p) {
+        let n = p.heapIndex;
+        let prev = undefined;
+        while (n > 1) {
+            prev = h.buf[Math.trunc(n / 2)];
+            if (this.compareNode(p, prev) >= 0) {
+                break;
+            }
+            h.buf[n] = prev;
+            prev.heapIndex = n;
+            n = Math.trunc(n / 2);
+        }
+        h.buf[n] = p;
+        p.heapIndex = n;
+    }
+    nodeFold(p) {
+        if (p.childCount > 0) {
+            return undefined;
+        }
+        const q = p.parent;
+        q.count += p.count;
+        q.r += p.r;
+        q.g += p.g;
+        q.b += p.b;
+        q.childCount--;
+        q.children[p.childIndex] = undefined;
+        return q;
+    }
+    compareNode(a, b) {
+        if (a.childCount < b.childCount) {
+            return -1;
+        }
+        if (a.childCount > b.childCount) {
+            return 1;
+        }
+        const ac = a.count >> a.depth;
+        const bc = b.count >> b.depth;
+        return ac < bc ? -1 : ac > bc ? 1 : 0;
+    }
+    getQuantizedColor(c) {
+        let r = color_Color.getRed(c);
+        let g = color_Color.getGreen(c);
+        let b = color_Color.getBlue(c);
+        let root = this.root;
+        for (let bit = 1 << 7; bit !== 0; bit >>= 1) {
+            const i = ((g & bit) !== 0 ? 1 : 0) * 4 +
+                ((r & bit) !== 0 ? 1 : 0) * 2 +
+                ((b & bit) !== 0 ? 1 : 0);
+            if (root.children[i] === undefined) {
+                break;
+            }
+            root = root.children[i];
+        }
+        r = root.r;
+        g = root.g;
+        b = root.b;
+        return color_Color.getColor(r, g, b);
+    }
+}
+OctreeQuantizer.ON_INHEAP = 1;
+//# sourceMappingURL=octree-quantizer.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/common/random-utils.js
+class RandomUtils {
+    static crand() {
+        return 1 - 2 * Math.random();
+    }
+    static grand() {
+        let x1 = 0;
+        let w = 0;
+        do {
+            const x2 = 2 * Math.random() - 1;
+            x1 = 2 * Math.random() - 1;
+            w = x1 * x1 + x2 * x2;
+        } while (w <= 0 || w >= 1);
+        return x1 * Math.sqrt((-2 * Math.log(w)) / w);
+    }
+    static prand(z) {
+        if (z <= 1e-10) {
+            return 0;
+        }
+        if (z > 100) {
+            return Math.trunc(Math.sqrt(z) * RandomUtils.grand() + z);
+        }
+        let k = 0;
+        const y = Math.exp(-z);
+        for (let s = 1.0; s >= y; ++k) {
+            s *= Math.random();
+        }
+        return k - 1;
+    }
+}
+//# sourceMappingURL=random-utils.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/filter/noise-type.js
+var NoiseType;
+(function (NoiseType) {
+    NoiseType[NoiseType["gaussian"] = 0] = "gaussian";
+    NoiseType[NoiseType["uniform"] = 1] = "uniform";
+    NoiseType[NoiseType["saltPepper"] = 2] = "saltPepper";
+    NoiseType[NoiseType["poisson"] = 3] = "poisson";
+    NoiseType[NoiseType["rice"] = 4] = "rice";
+})(NoiseType || (NoiseType = {}));
+//# sourceMappingURL=noise-type.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/filter/pixelate-mode.js
+var PixelateMode;
+(function (PixelateMode) {
+    PixelateMode[PixelateMode["upperLeft"] = 0] = "upperLeft";
+    PixelateMode[PixelateMode["average"] = 1] = "average";
+})(PixelateMode || (PixelateMode = {}));
+//# sourceMappingURL=pixelate-mode.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/filter/quantize-method.js
+var QuantizeMethod;
+(function (QuantizeMethod) {
+    QuantizeMethod[QuantizeMethod["neuralNet"] = 0] = "neuralNet";
+    QuantizeMethod[QuantizeMethod["octree"] = 1] = "octree";
+})(QuantizeMethod || (QuantizeMethod = {}));
+//# sourceMappingURL=quantize-method.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/filter/separable-kernel.js
+
+class SeparableKernel {
+    constructor(size) {
+        this.size = size;
+        this.coefficients = new Array(2 * size + 1).fill(0);
+    }
+    get length() {
+        return this.coefficients.length;
+    }
+    reflect(max, x) {
+        if (x < 0) {
+            return -x;
+        }
+        if (x >= max) {
+            return max - (x - max) - 1;
+        }
+        return x;
+    }
+    applyCoeffsLine(src, dst, y, width, horizontal) {
+        for (let x = 0; x < width; x++) {
+            let r = 0;
+            let g = 0;
+            let b = 0;
+            let a = 0;
+            for (let j = -this.size, j2 = 0; j <= this.size; ++j, ++j2) {
+                const coeff = this.coefficients[j2];
+                const gr = this.reflect(width, x + j);
+                const sc = horizontal ? src.getPixel(gr, y) : src.getPixel(y, gr);
+                r += coeff * color_Color.getRed(sc);
+                g += coeff * color_Color.getGreen(sc);
+                b += coeff * color_Color.getBlue(sc);
+                a += coeff * color_Color.getAlpha(sc);
+            }
+            const c = color_Color.getColor(r > 255 ? 255 : r, g > 255 ? 255 : g, b > 255 ? 255 : b, a > 255 ? 255 : a);
+            if (horizontal) {
+                dst.setPixel(x, y, c);
+            }
+            else {
+                dst.setPixel(y, x, c);
+            }
+        }
+    }
+    getCoefficient(index) {
+        return this.coefficients[index];
+    }
+    setCoefficient(index, c) {
+        this.coefficients[index] = c;
+    }
+    apply(src, dst, horizontal = true) {
+        if (horizontal) {
+            for (let y = 0; y < src.height; ++y) {
+                this.applyCoeffsLine(src, dst, y, src.width, horizontal);
+            }
+        }
+        else {
+            for (let x = 0; x < src.width; ++x) {
+                this.applyCoeffsLine(src, dst, x, src.height, horizontal);
+            }
+        }
+    }
+    scaleCoefficients(s) {
+        for (let i = 0; i < this.coefficients.length; ++i) {
+            this.coefficients[i] *= s;
+        }
+    }
+}
+//# sourceMappingURL=separable-kernel.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/filter/image-filter.js
+
+
+
+
+
+
+
+
+
+
+
+
+
+class ImageFilter {
+    static smoothVignetteStep(edge0, edge1, x) {
+        let _x = x;
+        _x = (_x - edge0) / (edge1 - edge0);
+        if (_x < 0.0) {
+            _x = 0.0;
+        }
+        if (_x > 1.0) {
+            _x = 1.0;
+        }
+        return _x * _x * (3.0 - 2.0 * _x);
+    }
+    static adjustColor(options) {
+        if (options.amount === 0) {
+            return options.src;
+        }
+        const contrast = options.contrast !== undefined
+            ? MathOperators.clamp(options.contrast, 0, 1)
+            : undefined;
+        const saturation = options.saturation !== undefined
+            ? MathOperators.clamp(options.saturation, 0, 1)
+            : undefined;
+        const brightness = options.brightness !== undefined
+            ? MathOperators.clamp(options.brightness, 0, 1)
+            : undefined;
+        const gamma = options.gamma !== undefined
+            ? MathOperators.clamp(options.gamma, 0, 1000)
+            : undefined;
+        let exposure = options.exposure !== undefined
+            ? MathOperators.clamp(options.exposure, 0, 1000)
+            : undefined;
+        const amount = options.amount !== undefined
+            ? MathOperators.clamp(options.amount, 0, 1000)
+            : undefined;
+        const DEG_TO_RAD = 0.0174532925;
+        const avgLumR = 0.5;
+        const avgLumG = 0.5;
+        const avgLumB = 0.5;
+        const lumCoeffR = 0.2125;
+        const lumCoeffG = 0.7154;
+        const lumCoeffB = 0.0721;
+        const useBlacksWhitesMids = options.blacks !== undefined ||
+            options.whites !== undefined ||
+            options.mids !== undefined;
+        let br = 0;
+        let bg = 0;
+        let bb = 0;
+        let wr = 0;
+        let wg = 0;
+        let wb = 0;
+        let mr = 0;
+        let mg = 0;
+        let mb = 0;
+        if (useBlacksWhitesMids) {
+            br =
+                options.blacks !== undefined ? color_Color.getRed(options.blacks) / 255 : 0;
+            bg =
+                options.blacks !== undefined ? color_Color.getGreen(options.blacks) / 255 : 0;
+            bb =
+                options.blacks !== undefined ? color_Color.getBlue(options.blacks) / 255 : 0;
+            wr =
+                options.whites !== undefined ? color_Color.getRed(options.whites) / 255 : 1;
+            wg =
+                options.whites !== undefined ? color_Color.getGreen(options.whites) / 255 : 1;
+            wb =
+                options.whites !== undefined ? color_Color.getBlue(options.whites) / 255 : 1;
+            mr = options.mids !== undefined ? color_Color.getRed(options.mids) / 255 : 0.5;
+            mg =
+                options.mids !== undefined ? color_Color.getGreen(options.mids) / 255 : 0.5;
+            mb = options.mids !== undefined ? color_Color.getBlue(options.mids) / 255 : 0.5;
+            mr = 1 / (1 + 2 * (mr - 0.5));
+            mg = 1 / (1 + 2 * (mg - 0.5));
+            mb = 1 / (1 + 2 * (mb - 0.5));
+        }
+        const invSaturation = saturation !== undefined ? 1 - MathOperators.clamp(saturation, 0, 1) : 0;
+        const invContrast = contrast !== undefined ? 1 - MathOperators.clamp(contrast, 0, 1) : 0;
+        if (exposure !== undefined) {
+            exposure = Math.pow(2, exposure);
+        }
+        let hueR = 0;
+        let hueG = 0;
+        let hueB = 0;
+        if (options.hue !== undefined) {
+            options.hue *= DEG_TO_RAD;
+            const s = Math.sin(options.hue);
+            const c = Math.cos(options.hue);
+            hueR = (2 * c) / 3;
+            hueG = (-Math.sqrt(3) * s - c) / 3;
+            hueB = (Math.sqrt(3) * s - c + 1) / 3;
+        }
+        const invAmount = amount !== undefined ? 1 - MathOperators.clamp(amount, 0, 1) : 0;
+        const pixels = options.src.getBytes();
+        for (let i = 0, len = pixels.length; i < len; i += 4) {
+            const or = pixels[i] / 255;
+            const og = pixels[i + 1] / 255;
+            const ob = pixels[i + 2] / 255;
+            let r = or;
+            let g = og;
+            let b = ob;
+            if (useBlacksWhitesMids) {
+                r = Math.pow((r + br) * wr, mr);
+                g = Math.pow((g + bg) * wg, mg);
+                b = Math.pow((b + bb) * wb, mb);
+            }
+            if (brightness !== undefined && brightness !== 1) {
+                const br = MathOperators.clamp(brightness, 0, 1000);
+                r *= br;
+                g *= br;
+                b *= br;
+            }
+            if (saturation !== undefined) {
+                const lum = r * lumCoeffR + g * lumCoeffG + b * lumCoeffB;
+                r = lum * invSaturation + r * saturation;
+                g = lum * invSaturation + g * saturation;
+                b = lum * invSaturation + b * saturation;
+            }
+            if (contrast !== undefined) {
+                r = avgLumR * invContrast + r * contrast;
+                g = avgLumG * invContrast + g * contrast;
+                b = avgLumB * invContrast + b * contrast;
+            }
+            if (gamma !== undefined) {
+                r = Math.pow(r, gamma);
+                g = Math.pow(g, gamma);
+                b = Math.pow(b, gamma);
+            }
+            if (exposure !== undefined) {
+                r *= exposure;
+                g *= exposure;
+                b *= exposure;
+            }
+            if (options.hue !== undefined && options.hue !== 0) {
+                const hr = r * hueR + g * hueG + b * hueB;
+                const hg = r * hueB + g * hueR + b * hueG;
+                const hb = r * hueG + g * hueB + b * hueR;
+                r = hr;
+                g = hg;
+                b = hb;
+            }
+            if (amount !== undefined) {
+                r = r * amount + or * invAmount;
+                g = g * amount + og * invAmount;
+                b = b * amount + ob * invAmount;
+            }
+            pixels[i] = MathOperators.clampInt255(r * 255);
+            pixels[i + 1] = MathOperators.clampInt255(g * 255);
+            pixels[i + 2] = MathOperators.clampInt255(b * 255);
+        }
+        return options.src;
+    }
+    static brightness(src, brightness) {
+        if (brightness === 0) {
+            return src;
+        }
+        const pixels = src.getBytes();
+        for (let i = 0, len = pixels.length; i < len; i += 4) {
+            pixels[i] = MathOperators.clampInt255(pixels[i] + brightness);
+            pixels[i + 1] = MathOperators.clampInt255(pixels[i + 1] + brightness);
+            pixels[i + 2] = MathOperators.clampInt255(pixels[i + 2] + brightness);
+        }
+        return src;
+    }
+    static bumpToNormal(src, strength = 2) {
+        const dest = MemoryImage.from(src);
+        for (let y = 0; y < src.height; ++y) {
+            for (let x = 0; x < src.width; ++x) {
+                const height = color_Color.getRed(src.getPixel(x, y)) / 255;
+                let du = (height -
+                    color_Color.getRed(src.getPixel(x < src.width - 1 ? x + 1 : x, y)) /
+                        255) *
+                    strength;
+                let dv = (height -
+                    color_Color.getRed(src.getPixel(x, y < src.height - 1 ? y + 1 : y)) /
+                        255) *
+                    strength;
+                const z = Math.abs(du) + Math.abs(dv);
+                if (z > 1) {
+                    du /= z;
+                    dv /= z;
+                }
+                const dw = Math.sqrt(1 - du * du - dv * dv);
+                const nX = du * 0.5 + 0.5;
+                const nY = dv * 0.5 + 0.5;
+                const nZ = dw;
+                dest.setPixelRgba(x, y, Math.floor(255 * nX), Math.floor(255 * nY), Math.floor(255 * nZ));
+            }
+        }
+        return dest;
+    }
+    static colorOffset(options) {
+        var _a, _b, _c, _d;
+        const pixels = options.src.getBytes();
+        for (let i = 0, len = pixels.length; i < len; i += 4) {
+            pixels[i] = MathOperators.clampInt255(pixels[i] + ((_a = options.red) !== null && _a !== void 0 ? _a : 0));
+            pixels[i + 1] = MathOperators.clampInt255(pixels[i + 1] + ((_b = options.green) !== null && _b !== void 0 ? _b : 0));
+            pixels[i + 2] = MathOperators.clampInt255(pixels[i + 2] + ((_c = options.blue) !== null && _c !== void 0 ? _c : 0));
+            pixels[i + 3] = MathOperators.clampInt255(pixels[i + 3] + ((_d = options.alpha) !== null && _d !== void 0 ? _d : 0));
+        }
+        return options.src;
+    }
+    static contrast(src, contrast) {
+        if (contrast === 100) {
+            return src;
+        }
+        let c = contrast / 100;
+        c *= c;
+        const clevels = new Uint8Array(256);
+        for (let i = 0; i < 256; ++i) {
+            clevels[i] = MathOperators.clampInt255(((i / 255.0 - 0.5) * c + 0.5) * 255.0);
+        }
+        const p = src.getBytes();
+        for (let i = 0, len = p.length; i < len; i += 4) {
+            p[i] = clevels[p[i]];
+            p[i + 1] = clevels[p[i + 1]];
+            p[i + 2] = clevels[p[i + 2]];
+        }
+        return src;
+    }
+    static convolution(options) {
+        var _a, _b;
+        const tmp = MemoryImage.from(options.src);
+        for (let y = 0; y < options.src.height; ++y) {
+            for (let x = 0; x < options.src.width; ++x) {
+                const c = tmp.getPixel(x, y);
+                let r = 0;
+                let g = 0;
+                let b = 0;
+                const a = color_Color.getAlpha(c);
+                for (let j = 0, fi = 0; j < 3; ++j) {
+                    const yv = Math.min(Math.max(y - 1 + j, 0), options.src.height - 1);
+                    for (let i = 0; i < 3; ++i, ++fi) {
+                        const xv = Math.min(Math.max(x - 1 + i, 0), options.src.width - 1);
+                        const c2 = tmp.getPixel(xv, yv);
+                        r += color_Color.getRed(c2) * options.filter[fi];
+                        g += color_Color.getGreen(c2) * options.filter[fi];
+                        b += color_Color.getBlue(c2) * options.filter[fi];
+                    }
+                }
+                const div = (_a = options.div) !== null && _a !== void 0 ? _a : 1;
+                const offset = (_b = options.offset) !== null && _b !== void 0 ? _b : 0;
+                r = r / div + offset;
+                g = g / div + offset;
+                b = b / div + offset;
+                r = r > 255 ? 255 : r < 0 ? 0 : r;
+                g = g > 255 ? 255 : g < 0 ? 0 : g;
+                b = b > 255 ? 255 : b < 0 ? 0 : b;
+                options.src.setPixel(x, y, color_Color.getColor(r, g, b, a));
+            }
+        }
+        return options.src;
+    }
+    static emboss(src) {
+        const filter = [1.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.5];
+        return ImageFilter.convolution({
+            src: src,
+            filter: filter,
+            div: 1,
+            offset: 127,
+        });
+    }
+    static gaussianBlur(src, radius) {
+        if (radius <= 0) {
+            return src;
+        }
+        let kernel = undefined;
+        if (ImageFilter.gaussianKernelCache.has(radius)) {
+            kernel = ImageFilter.gaussianKernelCache.get(radius);
+        }
+        else {
+            const sigma = (radius * 2) / 3;
+            const s = 2 * sigma * sigma;
+            kernel = new SeparableKernel(radius);
+            let sum = 0;
+            for (let x = -radius; x <= radius; ++x) {
+                const c = Math.exp(-(x * x) / s);
+                sum += c;
+                kernel.setCoefficient(x + radius, c);
+            }
+            kernel.scaleCoefficients(1 / sum);
+            ImageFilter.gaussianKernelCache.set(radius, kernel);
+        }
+        return ImageFilter.separableConvolution(src, kernel);
+    }
+    static grayscale(src) {
+        const p = src.getBytes();
+        for (let i = 0, len = p.length; i < len; i += 4) {
+            const l = color_Color.getLuminanceRgb(p[i], p[i + 1], p[i + 2]);
+            p[i] = l;
+            p[i + 1] = l;
+            p[i + 2] = l;
+        }
+        return src;
+    }
+    static invert(src) {
+        const p = src.getBytes();
+        for (let i = 0, len = p.length; i < len; i += 4) {
+            p[i] = 255 - p[i];
+            p[i + 1] = 255 - p[i + 1];
+            p[i + 2] = 255 - p[i + 2];
+        }
+        return src;
+    }
+    static noise(image, sigma, type = NoiseType.gaussian) {
+        let nsigma = sigma;
+        let min = 0;
+        let max = 0;
+        if (nsigma === 0 && type !== NoiseType.poisson) {
+            return image;
+        }
+        if (nsigma < 0 || type === NoiseType.saltPepper) {
+            const extremes = image.getColorExtremes();
+            min = extremes.min;
+            max = extremes.max;
+        }
+        if (nsigma < 0) {
+            nsigma = (-nsigma * (max - min)) / 100.0;
+        }
+        const len = image.length;
+        switch (type) {
+            case NoiseType.gaussian:
+                for (let i = 0; i < len; ++i) {
+                    const c = image.getPixelByIndex(i);
+                    const r = Math.trunc(color_Color.getRed(c) + nsigma * RandomUtils.grand());
+                    const g = Math.trunc(color_Color.getGreen(c) + nsigma * RandomUtils.grand());
+                    const b = Math.trunc(color_Color.getBlue(c) + nsigma * RandomUtils.grand());
+                    const a = color_Color.getAlpha(c);
+                    image.setPixelByIndex(i, color_Color.getColor(r, g, b, a));
+                }
+                break;
+            case NoiseType.uniform:
+                for (let i = 0; i < len; ++i) {
+                    const c = image.getPixelByIndex(i);
+                    const r = Math.trunc(color_Color.getRed(c) + nsigma * RandomUtils.crand());
+                    const g = Math.trunc(color_Color.getGreen(c) + nsigma * RandomUtils.crand());
+                    const b = Math.trunc(color_Color.getBlue(c) + nsigma * RandomUtils.crand());
+                    const a = color_Color.getAlpha(c);
+                    image.setPixelByIndex(i, color_Color.getColor(r, g, b, a));
+                }
+                break;
+            case NoiseType.saltPepper:
+                if (nsigma < 0) {
+                    nsigma = -nsigma;
+                }
+                if (max === min) {
+                    min = 0;
+                    max = 255;
+                }
+                for (let i = 0; i < len; ++i) {
+                    const c = image.getPixelByIndex(i);
+                    if (Math.random() * 100 < nsigma) {
+                        const r = Math.random() < 0.5 ? max : min;
+                        const g = Math.random() < 0.5 ? max : min;
+                        const b = Math.random() < 0.5 ? max : min;
+                        const a = color_Color.getAlpha(c);
+                        image.setPixelByIndex(i, color_Color.getColor(r, g, b, a));
+                    }
+                }
+                break;
+            case NoiseType.poisson:
+                for (let i = 0; i < len; ++i) {
+                    const c = image.getPixelByIndex(i);
+                    const r = RandomUtils.prand(color_Color.getRed(c));
+                    const g = RandomUtils.prand(color_Color.getGreen(c));
+                    const b = RandomUtils.prand(color_Color.getBlue(c));
+                    const a = color_Color.getAlpha(c);
+                    image.setPixelByIndex(i, color_Color.getColor(r, g, b, a));
+                }
+                break;
+            case NoiseType.rice: {
+                const sqrt2 = Math.sqrt(2);
+                for (let i = 0; i < len; ++i) {
+                    const c = image.getPixelByIndex(i);
+                    let val0 = color_Color.getRed(c) / sqrt2;
+                    let re = val0 + nsigma * RandomUtils.grand();
+                    let im = val0 + nsigma * RandomUtils.grand();
+                    let val = Math.sqrt(re * re + im * im);
+                    const r = Math.trunc(val);
+                    val0 = color_Color.getGreen(c) / sqrt2;
+                    re = val0 + nsigma * RandomUtils.grand();
+                    im = val0 + nsigma * RandomUtils.grand();
+                    val = Math.sqrt(re * re + im * im);
+                    const g = Math.trunc(val);
+                    val0 = color_Color.getBlue(c) / sqrt2;
+                    re = val0 + nsigma * RandomUtils.grand();
+                    im = val0 + nsigma * RandomUtils.grand();
+                    val = Math.sqrt(re * re + im * im);
+                    const b = Math.trunc(val);
+                    const a = color_Color.getAlpha(c);
+                    image.setPixelByIndex(i, color_Color.getColor(r, g, b, a));
+                }
+                break;
+            }
+        }
+        return image;
+    }
+    static normalize(src, minValue, maxValue) {
+        const A = minValue < maxValue ? minValue : maxValue;
+        const B = minValue < maxValue ? maxValue : minValue;
+        const extremes = src.getColorExtremes();
+        const min = extremes.min;
+        const max = extremes.max;
+        if (min === max) {
+            return src.fill(minValue);
+        }
+        if (min !== A || max !== B) {
+            const p = src.getBytes();
+            for (let i = 0, len = p.length; i < len; i += 4) {
+                p[i] = Math.trunc(((p[i] - min) / (max - min)) * (B - A) + A);
+                p[i + 1] = Math.trunc(((p[i + 1] - min) / (max - min)) * (B - A) + A);
+                p[i + 2] = Math.trunc(((p[i + 2] - min) / (max - min)) * (B - A) + A);
+                p[i + 3] = Math.trunc(((p[i + 3] - min) / (max - min)) * (B - A) + A);
+            }
+        }
+        return src;
+    }
+    static pixelate(src, blockSize, mode = PixelateMode.upperLeft) {
+        if (blockSize <= 1) {
+            return src;
+        }
+        const bs = blockSize - 1;
+        switch (mode) {
+            case PixelateMode.upperLeft:
+                for (let y = 0; y < src.height; y += blockSize) {
+                    for (let x = 0; x < src.width; x += blockSize) {
+                        if (src.boundsSafe(x, y)) {
+                            const c = src.getPixel(x, y);
+                            const rect = new Rectangle(x, y, x + bs, y + bs);
+                            Draw.fillRect(src, rect, c);
+                        }
+                    }
+                }
+                break;
+            case PixelateMode.average:
+                for (let y = 0; y < src.height; y += blockSize) {
+                    for (let x = 0; x < src.width; x += blockSize) {
+                        let a = 0;
+                        let r = 0;
+                        let g = 0;
+                        let b = 0;
+                        let total = 0;
+                        for (let cy = 0; cy < blockSize; ++cy) {
+                            for (let cx = 0; cx < blockSize; ++cx) {
+                                if (!src.boundsSafe(x + cx, y + cy)) {
+                                    continue;
+                                }
+                                const c = src.getPixel(x + cx, y + cy);
+                                a += color_Color.getAlpha(c);
+                                r += color_Color.getRed(c);
+                                g += color_Color.getGreen(c);
+                                b += color_Color.getBlue(c);
+                                total++;
+                            }
+                        }
+                        if (total > 0) {
+                            const c = color_Color.getColor(Math.trunc(r / total), Math.trunc(g / total), Math.trunc(b / total), Math.trunc(a / total));
+                            const rect = new Rectangle(x, y, x + bs, y + bs);
+                            Draw.fillRect(src, rect, c);
+                        }
+                    }
+                }
+                break;
+        }
+        return src;
+    }
+    static quantize(options) {
+        var _a, _b;
+        const numberOfColors = (_a = options.numberOfColors) !== null && _a !== void 0 ? _a : 256;
+        const method = (_b = options.method) !== null && _b !== void 0 ? _b : QuantizeMethod.neuralNet;
+        if (method === QuantizeMethod.octree || numberOfColors < 4) {
+            const oct = new OctreeQuantizer(options.src, numberOfColors);
+            for (let i = 0, len = options.src.length; i < len; ++i) {
+                options.src.setPixelByIndex(i, oct.getQuantizedColor(options.src.getPixelByIndex(i)));
+            }
+            return options.src;
+        }
+        const quant = new NeuralQuantizer(options.src, numberOfColors);
+        for (let i = 0, len = options.src.length; i < len; ++i) {
+            options.src.setPixelByIndex(i, quant.getQuantizedColor(options.src.getPixelByIndex(i)));
+        }
+        return options.src;
+    }
+    static remapColors(options) {
+        var _a, _b, _c, _d;
+        const red = (_a = options.red) !== null && _a !== void 0 ? _a : ColorChannel.red;
+        const green = (_b = options.red) !== null && _b !== void 0 ? _b : ColorChannel.red;
+        const blue = (_c = options.red) !== null && _c !== void 0 ? _c : ColorChannel.red;
+        const alpha = (_d = options.red) !== null && _d !== void 0 ? _d : ColorChannel.red;
+        const l = [0, 0, 0, 0, 0];
+        const p = options.src.getBytes();
+        for (let i = 0, len = p.length; i < len; i += 4) {
+            l[0] = p[i];
+            l[1] = p[i + 1];
+            l[2] = p[i + 2];
+            l[3] = p[i + 3];
+            if (red === ColorChannel.luminance ||
+                green === ColorChannel.luminance ||
+                blue === ColorChannel.luminance ||
+                alpha === ColorChannel.luminance) {
+                l[4] = color_Color.getLuminanceRgb(l[0], l[1], l[2]);
+            }
+            p[i] = l[red];
+            p[i + 1] = l[green];
+            p[i + 2] = l[blue];
+            p[i + 3] = l[alpha];
+        }
+        return options.src;
+    }
+    static scaleRgba(src, r, g, b, a) {
+        const dr = r / 255;
+        const dg = g / 255;
+        const db = b / 255;
+        const da = a / 255;
+        const bytes = src.getBytes();
+        for (let i = 0, len = bytes.length; i < len; i += 4) {
+            bytes[i] = Math.floor(bytes[i] * dr);
+            bytes[i + 1] = Math.floor(bytes[i + 1] * dg);
+            bytes[i + 2] = Math.floor(bytes[i + 2] * db);
+            bytes[i + 3] = Math.floor(bytes[i + 3] * da);
+        }
+        return src;
+    }
+    static separableConvolution(src, kernel) {
+        const tmp = MemoryImage.from(src);
+        kernel.apply(src, tmp);
+        kernel.apply(tmp, src, false);
+        return src;
+    }
+    static sepia(src, amount = 1) {
+        if (amount === 0) {
+            return src;
+        }
+        const p = src.getBytes();
+        for (let i = 0, len = p.length; i < len; i += 4) {
+            const r = p[i];
+            const g = p[i + 1];
+            const b = p[i + 2];
+            const y = color_Color.getLuminanceRgb(r, g, b);
+            p[i] = MathOperators.clampInt255(amount * (y + 38) + (1.0 - amount) * r);
+            p[i + 1] = MathOperators.clampInt255(amount * (y + 18) + (1.0 - amount) * g);
+            p[i + 2] = MathOperators.clampInt255(amount * (y - 31) + (1.0 - amount) * b);
+        }
+        return src;
+    }
+    static smooth(src, w) {
+        const filter = [1, 1, 1, 1, w, 1, 1, 1, 1];
+        return ImageFilter.convolution({
+            src: src,
+            filter: filter,
+            div: w + 8,
+            offset: 0,
+        });
+    }
+    static sobel(src, amount = 1) {
+        const invAmount = 1 - amount;
+        const orig = ImageFilter.grayscale(MemoryImage.from(src));
+        const origRGBA = orig.getBytes();
+        const rowSize = src.width * 4;
+        const rgba = src.getBytes();
+        const rgbaLen = rgba.length;
+        for (let y = 0, pi = 0; y < src.height; ++y) {
+            for (let x = 0; x < src.width; ++x, pi += 4) {
+                const bl = pi + rowSize - 4;
+                const b = pi + rowSize;
+                const br = pi + rowSize + 4;
+                const l = pi - 4;
+                const r = pi + 4;
+                const tl = pi - rowSize - 4;
+                const t = pi - rowSize;
+                const tr = pi - rowSize + 4;
+                const tlInt = tl < 0 ? 0 : origRGBA[tl] / 255;
+                const tInt = t < 0 ? 0 : origRGBA[t] / 255;
+                const trInt = tr < 0 ? 0 : origRGBA[tr] / 255;
+                const lInt = l < 0 ? 0 : origRGBA[l] / 255;
+                const rInt = r < rgbaLen ? origRGBA[r] / 255 : 0;
+                const blInt = bl < rgbaLen ? origRGBA[bl] / 255 : 0;
+                const bInt = b < rgbaLen ? origRGBA[b] / 255 : 0;
+                const brInt = br < rgbaLen ? origRGBA[br] / 255 : 0;
+                const h = -tlInt - 2 * tInt - trInt + blInt + 2 * bInt + brInt;
+                const v = -blInt - 2 * lInt - tlInt + brInt + 2 * rInt + trInt;
+                const mag = MathOperators.clampInt255(Math.sqrt(h * h + v * v) * 255);
+                rgba[pi] = MathOperators.clampInt255(mag * amount + rgba[pi] * invAmount);
+                rgba[pi + 1] = MathOperators.clampInt255(mag * amount + rgba[pi + 1] * invAmount);
+                rgba[pi + 2] = MathOperators.clampInt255(mag * amount + rgba[pi + 2] * invAmount);
+            }
+        }
+        return src;
+    }
+    static vignette(options) {
+        var _a, _b, _c;
+        const start = (_a = options.start) !== null && _a !== void 0 ? _a : 0.3;
+        const end = (_b = options.end) !== null && _b !== void 0 ? _b : 0.75;
+        const amount = (_c = options.amount) !== null && _c !== void 0 ? _c : 0.8;
+        const h = options.src.height - 1;
+        const w = options.src.width - 1;
+        const invAmt = 1 - amount;
+        const p = options.src.getBytes();
+        for (let y = 0, i = 0; y <= h; ++y) {
+            const dy = 0.5 - y / h;
+            for (let x = 0; x <= w; ++x, i += 4) {
+                const dx = 0.5 - x / w;
+                let d = Math.sqrt(dx * dx + dy * dy);
+                d = ImageFilter.smoothVignetteStep(end, start, d);
+                p[i] = MathOperators.clampInt255(amount * p[i] * d + invAmt * p[i]);
+                p[i + 1] = MathOperators.clampInt255(amount * p[i + 1] * d + invAmt * p[i + 1]);
+                p[i + 2] = MathOperators.clampInt255(amount * p[i + 2] * d + invAmt * p[i + 2]);
+            }
+        }
+        return options.src;
+    }
+}
+ImageFilter.gaussianKernelCache = new Map();
+//# sourceMappingURL=image-filter.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/hdr/hdr-to-image.js
+
+
+
+class HdrToImage {
+    static hdrToImage(hdr, exposure) {
+        const knee = (x, f) => Math.log(x * f + 1.0) / f;
+        const gamma = (h, m) => {
+            let x = Math.max(0, h * m);
+            if (x > 1.0) {
+                x = 1.0 + knee(x - 1, 0.184874);
+            }
+            return Math.pow(x, 0.4545) * 84.66;
+        };
+        const image = new MemoryImage({
+            width: hdr.width,
+            height: hdr.height,
+        });
+        const pixels = image.getBytes();
+        if (!hdr.hasColor) {
+            throw new ImageError('Only RGB[A] images are currently supported.');
+        }
+        const m = exposure !== undefined
+            ? Math.pow(2.0, MathOperators.clamp(exposure + 2.47393, -20.0, 20.0))
+            : 1.0;
+        for (let y = 0, di = 0; y < hdr.height; ++y) {
+            for (let x = 0; x < hdr.width; ++x) {
+                let r = hdr.getRed(x, y);
+                let g = hdr.numberOfChannels == 1 ? r : hdr.getGreen(x, y);
+                let b = hdr.numberOfChannels == 1 ? r : hdr.getBlue(x, y);
+                if (!Number.isFinite(r) || Number.isNaN(r)) {
+                    r = 0.0;
+                }
+                if (!Number.isFinite(g) || Number.isNaN(g)) {
+                    g = 0.0;
+                }
+                if (!Number.isFinite(b) || Number.isNaN(b)) {
+                    b = 0.0;
+                }
+                let ri = 0;
+                let gi = 0;
+                let bi = 0;
+                if (exposure !== undefined) {
+                    ri = gamma(r, m);
+                    gi = gamma(g, m);
+                    bi = gamma(b, m);
+                }
+                else {
+                    ri = r * 255.0;
+                    gi = g * 255.0;
+                    bi = b * 255.0;
+                }
+                const mi = Math.max(ri, Math.max(gi, bi));
+                if (mi > 255.0) {
+                    ri = 255.0 * (ri / mi);
+                    gi = 255.0 * (gi / mi);
+                    bi = 255.0 * (bi / mi);
+                }
+                pixels[di++] = MathOperators.clampInt255(ri);
+                pixels[di++] = MathOperators.clampInt255(gi);
+                pixels[di++] = MathOperators.clampInt255(bi);
+                if (hdr.alpha !== undefined) {
+                    let a = hdr.alpha.getFloat(x, y);
+                    if (!Number.isFinite(a) || Number.isNaN(a)) {
+                        a = 1.0;
+                    }
+                    pixels[di++] = MathOperators.clampInt255(a * 255.0);
+                }
+                else {
+                    pixels[di++] = 255;
+                }
+            }
+        }
+        return image;
+    }
+}
+//# sourceMappingURL=hdr-to-image.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/transform/trim-mode.js
+var TrimMode;
+(function (TrimMode) {
+    TrimMode[TrimMode["transparent"] = 0] = "transparent";
+    TrimMode[TrimMode["topLeftColor"] = 1] = "topLeftColor";
+    TrimMode[TrimMode["bottomRightColor"] = 2] = "bottomRightColor";
+})(TrimMode || (TrimMode = {}));
+//# sourceMappingURL=trim-mode.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/transform/trim-side.js
+class TrimSide {
+    constructor(...sides) {
+        this.value = 0;
+        for (const s of sides) {
+            this.value |= typeof s === 'number' ? s : s.value;
+        }
+    }
+    has(side) {
+        return (this.value & side.value) !== 0;
+    }
+}
+TrimSide.top = new TrimSide(1);
+TrimSide.bottom = new TrimSide(2);
+TrimSide.left = new TrimSide(4);
+TrimSide.right = new TrimSide(8);
+TrimSide.all = new TrimSide(1 | 2 | 4 | 8);
+//# sourceMappingURL=trim-side.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/transform/trim.js
+
+
+
+
+
+
+
+class TrimTransform {
+    static findTrim(src, mode = TrimMode.transparent, sides = TrimSide.all) {
+        let h = src.height;
+        let w = src.width;
+        const bg = mode === TrimMode.topLeftColor
+            ? src.getPixel(0, 0)
+            : mode === TrimMode.bottomRightColor
+                ? src.getPixel(w - 1, h - 1)
+                : 0;
+        let xmin = w;
+        let xmax = 0;
+        let ymin = undefined;
+        let ymax = 0;
+        for (let y = 0; y < h; ++y) {
+            let first = true;
+            for (let x = 0; x < w; ++x) {
+                const c = src.getPixel(x, y);
+                if ((mode === TrimMode.transparent && color_Color.getAlpha(c) !== 0) ||
+                    (mode !== TrimMode.transparent && c !== bg)) {
+                    if (xmin > x) {
+                        xmin = x;
+                    }
+                    if (xmax < x) {
+                        xmax = x;
+                    }
+                    ymin !== null && ymin !== void 0 ? ymin : (ymin = y);
+                    ymax = y;
+                    if (first) {
+                        x = xmax;
+                        first = false;
+                    }
+                }
+            }
+        }
+        if (ymin === undefined) {
+            return new Rectangle(0, 0, w, h);
+        }
+        if (!sides.has(TrimSide.top)) {
+            ymin = 0;
+        }
+        if (!sides.has(TrimSide.bottom)) {
+            ymax = h - 1;
+        }
+        if (!sides.has(TrimSide.left)) {
+            xmin = 0;
+        }
+        if (!sides.has(TrimSide.right)) {
+            xmax = w - 1;
+        }
+        w = 1 + xmax - xmin;
+        h = 1 + ymax - ymin;
+        return new Rectangle(xmin, ymin, w, h);
+    }
+    static trim(src, mode = TrimMode.transparent, sides = TrimSide.all) {
+        if (mode === TrimMode.transparent &&
+            src.rgbChannelSet === RgbChannelSet.rgb) {
+            return MemoryImage.from(src);
+        }
+        const crop = TrimTransform.findTrim(src, mode, sides);
+        const dst = new MemoryImage({
+            width: crop.width,
+            height: crop.height,
+            exifData: src.exifData,
+            iccProfile: src.iccProfile,
+        });
+        ImageTransform.copyInto({
+            dst: dst,
+            src: src,
+            srcX: crop.left,
+            srcY: crop.top,
+            srcW: crop.width,
+            srcH: crop.height,
+            blend: false,
+        });
+        return dst;
+    }
+}
+//# sourceMappingURL=trim.js.map
+;// CONCATENATED MODULE: ./node_modules/image-in-browser/lib/index.js
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+function findDecoderForData(data) {
+    const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+    const jpg = new JpegDecoder();
+    if (jpg.isValidFile(bytes)) {
+        return jpg;
+    }
+    const png = new PngDecoder();
+    if (png.isValidFile(bytes)) {
+        return png;
+    }
+    const gif = new GifDecoder();
+    if (gif.isValidFile(bytes)) {
+        return gif;
+    }
+    const tiff = new TiffDecoder();
+    if (tiff.isValidFile(bytes)) {
+        return tiff;
+    }
+    const bmp = new BmpDecoder();
+    if (bmp.isValidFile(bytes)) {
+        return bmp;
+    }
+    const tga = new TgaDecoder();
+    if (tga.isValidFile(bytes)) {
+        return tga;
+    }
+    const ico = new IcoDecoder();
+    if (ico.isValidFile(bytes)) {
+        return ico;
+    }
+    return undefined;
+}
+function decodeImage(data) {
+    const decoder = findDecoderForData(data);
+    if (decoder === undefined) {
+        return undefined;
+    }
+    const dataUint8 = new Uint8Array(data);
+    return decoder.decodeImage(dataUint8);
+}
+function decodeAnimation(data) {
+    const decoder = findDecoderForData(data);
+    if (decoder === undefined) {
+        return undefined;
+    }
+    const dataUint8 = new Uint8Array(data);
+    return decoder.decodeAnimation(dataUint8);
+}
+function getDecoderForNamedImage(name) {
+    const n = name.toLowerCase();
+    if (n.endsWith('.jpg') || n.endsWith('.jpeg')) {
+        return new JpegDecoder();
+    }
+    if (n.endsWith('.png')) {
+        return new PngDecoder();
+    }
+    if (n.endsWith('.tga')) {
+        return new TgaDecoder();
+    }
+    if (n.endsWith('.gif')) {
+        return new GifDecoder();
+    }
+    if (n.endsWith('.tif') || n.endsWith('.tiff')) {
+        return new TiffDecoder();
+    }
+    if (n.endsWith('.bmp')) {
+        return new BmpDecoder();
+    }
+    if (n.endsWith('.ico')) {
+        return new IcoDecoder();
+    }
+    return undefined;
+}
+function decodeNamedAnimation(data, name) {
+    const decoder = getDecoderForNamedImage(name);
+    if (decoder === undefined) {
+        return undefined;
+    }
+    const dataUint8 = new Uint8Array(data);
+    return decoder.decodeAnimation(dataUint8);
+}
+function decodeNamedImage(data, name) {
+    const decoder = getDecoderForNamedImage(name);
+    if (decoder === undefined) {
+        return undefined;
+    }
+    const dataUint8 = new Uint8Array(data);
+    return decoder.decodeImage(dataUint8);
+}
+function encodeNamedImage(image, name) {
+    const n = name.toLowerCase();
+    if (n.endsWith('.jpg') || n.endsWith('.jpeg')) {
+        return encodeJpg(image);
+    }
+    if (n.endsWith('.png')) {
+        return encodePng(image);
+    }
+    if (n.endsWith('.tga')) {
+        return encodeTga(image);
+    }
+    if (n.endsWith('.gif')) {
+        return encodeGif(image);
+    }
+    if (n.endsWith('.ico')) {
+        return encodeIco(image);
+    }
+    if (n.endsWith('.bmp')) {
+        return encodeBmp(image);
+    }
+    return undefined;
+}
+function decodeJpg(data) {
+    const dataUint8 = new Uint8Array(data);
+    return new JpegDecoder().decodeImage(dataUint8);
+}
+function encodeJpg(image, quality = 100) {
+    return new JpegEncoder(quality).encodeImage(image);
+}
+function decodePng(data) {
+    const dataUint8 = new Uint8Array(data);
+    return new PngDecoder().decodeImage(dataUint8);
+}
+function decodePngAnimation(data) {
+    const dataUint8 = new Uint8Array(data);
+    return new PngDecoder().decodeAnimation(dataUint8);
+}
+function encodePng(image, level = 6) {
+    return new PngEncoder({
+        level: level,
+    }).encodeImage(image);
+}
+function encodePngAnimation(animation, level = 6) {
+    return new PngEncoder({
+        level: level,
+    }).encodeAnimation(animation);
+}
+function decodeTga(data) {
+    const dataUint8 = new Uint8Array(data);
+    return new TgaDecoder().decodeImage(dataUint8);
+}
+function encodeTga(image) {
+    return new TgaEncoder().encodeImage(image);
+}
+function decodeGif(data) {
+    const dataUint8 = new Uint8Array(data);
+    return new GifDecoder().decodeImage(dataUint8);
+}
+function decodeGifAnimation(data) {
+    const dataUint8 = new Uint8Array(data);
+    return new GifDecoder().decodeAnimation(dataUint8);
+}
+function encodeGif(image, samplingFactor = 10) {
+    return new GifEncoder({
+        samplingFactor: samplingFactor,
+    }).encodeImage(image);
+}
+function encodeGifAnimation(animation, samplingFactor = 10) {
+    return new GifEncoder({
+        samplingFactor: samplingFactor,
+    }).encodeAnimation(animation);
+}
+function decodeTiff(data) {
+    const dataUint8 = new Uint8Array(data);
+    return new TiffDecoder().decodeImage(dataUint8);
+}
+function decodeTiffAnimation(data) {
+    const dataUint8 = new Uint8Array(data);
+    return new TiffDecoder().decodeAnimation(dataUint8);
+}
+function encodeTiff(image) {
+    return new TiffEncoder().encodeImage(image);
+}
+function decodeBmp(data) {
+    const dataUint8 = new Uint8Array(data);
+    return new BmpDecoder().decodeImage(dataUint8);
+}
+function encodeBmp(image) {
+    return new BmpEncoder().encodeImage(image);
+}
+function encodeIco(image) {
+    return new IcoEncoder().encodeImage(image);
+}
+function encodeIcoImages(images) {
+    return new IcoEncoder().encodeImages(images);
+}
+function decodeIco(data) {
+    const dataUint8 = new Uint8Array(data);
+    return new IcoDecoder().decodeImage(dataUint8);
+}
+//# sourceMappingURL=index.js.map
 ;// CONCATENATED MODULE: ./node_modules/@xmcl/model/dist/index.esm.js
+
+
+
 
 
 
@@ -26169,6 +44310,50 @@ function findRealTexturePath(model, variantKey) {
         texturePath = next;
     }
     return texturePath;
+}
+function loadTexture(textureData, textureLoader) {
+    let texture;
+    let resolveFn, rejectFn;
+    const progressFn = function () { };
+    const promise = new Promise(function (resolve, reject) {
+        resolveFn = resolve;
+        rejectFn = reject;
+    });
+    if (textureData.url != undefined && textureData.url.length > 0) {
+        texture = textureLoader.load(textureData.url, resolveFn, progressFn, rejectFn);
+    }
+    else if (textureData.read instanceof Function) {
+        texture = new DataTexture();
+        let fileReadPromise = textureData.read();
+        Promise.resolve(fileReadPromise)
+            .then(function (fileContents) {
+            const decodedContents = decodeImage(fileContents);
+            if (decodedContents == undefined) {
+                return;
+            }
+            const width = decodedContents === null || decodedContents === void 0 ? void 0 : decodedContents.width;
+            const height = decodedContents === null || decodedContents === void 0 ? void 0 : decodedContents.height;
+            if (width == undefined || height == undefined) {
+                // Unable to decode the image
+                return;
+            }
+            const imageDataArray = decodedContents.getBytes();
+            const imageDataArrayClamped = new Uint8ClampedArray(imageDataArray);
+            const imageData = new ImageData(imageDataArrayClamped, width, height);
+            if (texture != undefined) {
+                texture.image = imageData;
+                texture.needsUpdate = true;
+            }
+        })
+            .then(resolveFn)
+            .catch(rejectFn);
+    }
+    if (texture == undefined) {
+        texture = new Texture();
+    }
+    texture.flipY = true;
+    texture.userData.hasLoaded = promise;
+    return texture;
 }
 class BlockModelObject extends Object3D_Object3D {
     constructor() {
@@ -26236,7 +44421,10 @@ class BlockModelFactory {
     /**
      * Get threejs `Object3D` for that block model.
      */
-    getObject(model, options) {
+    getObject(model, options = {}, fix = 0.001) {
+        const x_rotation = options.x || 0;
+        const y_rotation = options.y || 0;
+        const uvlock = options.uvlock || false;
         const option = this.option;
         const textureRegistry = this.textureRegistry;
         const clipUVs = option.clipUVs || false;
@@ -26263,7 +44451,7 @@ class BlockModelFactory {
                 else if (texPath in textureRegistry) {
                     // build new material
                     const tex = textureRegistry[texPath];
-                    const texture = this.loader.load(tex.url);
+                    const texture = loadTexture(tex, this.loader);
                     // sharp pixels and smooth edges
                     texture.magFilter = constants_NearestFilter;
                     texture.minFilter = LinearFilter;
@@ -26288,7 +44476,6 @@ class BlockModelFactory {
                 y: (element.to[1] + element.from[1]) / 2 - 8,
                 z: (element.to[2] + element.from[2]) / 2 - 8,
             };
-            const fix = 0.001;
             const blockGeometry = new BoxGeometry_BoxGeometry(width + fix, height + fix, length + fix);
             const blockMesh = new Mesh_Mesh(blockGeometry, materials);
             blockMesh.name = "block-element";
@@ -26343,7 +44530,8 @@ class BlockModelFactory {
                 ]
             ][i];
             for (let i = 0; i < 6; i++) {
-                const face = element.faces[faces[i]];
+                const faceName = faces[i];
+                const face = element.faces[faceName];
                 let materialIndex = 0;
                 let uv;
                 if (face) {
@@ -26377,14 +44565,36 @@ class BlockModelFactory {
                     new Vector2(x2, y1),
                 ];
                 if (face && face.rotation) {
-                    const amount = face.rotation;
+                    let amount = Number(face.rotation);
                     // check property
                     if (!([0, 90, 180, 270].indexOf(amount) >= 0)) {
                         console.error("The \"rotation\" property for \"" + face + "\" face is invalid (got \"" + amount + "\").");
                     }
+                    amount = (360 - amount) % 360;
                     // rotate map
                     for (let j = 0; j < amount / 90; j++) {
-                        map = [map[1], map[2], map[3], map[0]];
+                        map = [map[1], map[3], map[0], map[2]];
+                    }
+                }
+                if (uvlock) {
+                    let rotation = 0;
+                    if (faceName == "up") {
+                        rotation = y_rotation;
+                    }
+                    else if (faceName == "down") {
+                        rotation = (360 - y_rotation) % 360;
+                    }
+                    else {
+                        rotation = x_rotation;
+                    }
+                    for (let j = 0; j < rotation / 90; j++) {
+                        for (let m = 0; m < map.length; m++) {
+                            const vector = map[m];
+                            const x = vector.x;
+                            const y = vector.y;
+                            vector.x = 1 - y;
+                            vector.y = x;
+                        }
                     }
                 }
                 uvAttr.push(...map);
@@ -26425,6 +44635,23 @@ class BlockModelFactory {
                 else if (axis === "z") {
                     pivot.rotateZ(angle * Math.PI / 180);
                 }
+                const rescale = element.rotation.rescale || false;
+                if (rescale) {
+                    if (angle % 90 == 45) {
+                        if (axis === "x") {
+                            pivot.scale.y *= Math.sqrt(2);
+                            pivot.scale.z *= Math.sqrt(2);
+                        }
+                        if (axis === "y") {
+                            pivot.scale.x *= Math.sqrt(2);
+                            pivot.scale.z *= Math.sqrt(2);
+                        }
+                        if (axis === "z") {
+                            pivot.scale.x *= Math.sqrt(2);
+                            pivot.scale.y *= Math.sqrt(2);
+                        }
+                    }
+                }
                 group.add(pivot);
             }
             else {
@@ -26434,6 +44661,8 @@ class BlockModelFactory {
                 group.add(pivot);
             }
         }
+        obj.rotateY(-y_rotation * Math.PI / 180);
+        obj.rotateX(-x_rotation * Math.PI / 180);
         obj.add(group);
         return obj;
     }
@@ -26819,6 +45048,7 @@ function ensureImage(textureSource) {
     });
 }
 class PlayerModel {
+    static create() { return new PlayerModel(); }
     constructor() {
         const canvas = document.createElement("canvas");
         canvas.width = 64;
@@ -26848,7 +45078,6 @@ class PlayerModel {
         this.materialCape = materialCape;
         this.playerObject3d = new PlayerObject3D(this.materialPlayer, this.materialCape, this.materialTransparent, false);
     }
-    static create() { return new PlayerModel(); }
     /**
      * @param skin The skin texture source. Should be url string, URL object, or a Image HTML element
      * @param isSlim Is this skin slim
@@ -27641,44 +45870,32 @@ var long_default = /*#__PURE__*/__webpack_require__.n(dist_long);
  * @module @xmcl/world
  */
 /**
- * Compute the bit length from new region section
- */
-function computeBitLen(palette, blockStates) {
-    let computedBitLen = log2DeBruijn(palette.length);
-    let avgBitLen = blockStates.length * 64 / 4096;
-    return computedBitLen >= 9 ? computedBitLen : avgBitLen;
-}
-/**
  * Create bit vector from a long array
  */
 function createBitVector(arr, bitLen) {
     let maxEntryValue = long_default().fromNumber(1).shiftLeft(bitLen).sub(1);
     let result = new Array(4096);
     for (let i = 0; i < 4096; ++i) {
-        result[i] = seek(arr, bitLen, i, maxEntryValue);
+        result[i] = Number(seek(arr, bitLen, i, maxEntryValue));
     }
     return result;
 }
 /**
  * Seek block id from a long array (new chunk format)
- * @param data The block state id long array
- * @param bitLen The bit length
+ * @param blockstates The block state id long array
+ * @param indexLength The bit length
  * @param index The index (composition of xyz) in chunk
  * @param maxEntryValue The max entry value
+ *
+ * @author Adapted from: Jean-Baptiste Skutnik's <https://github.com/spoutn1k> {@link https://github.com/spoutn1k/mcmap/blob/fec14647c600244bc7808b242b99331e7ee0ec38/src/chunk_format_versions/section_format.cpp| Reference C++ code}
  */
-function seek(data, bitLen, index, maxEntryValue = long_default().fromNumber(1).shiftLeft(bitLen).sub(1)) {
-    let offset = index * bitLen;
-    let j = offset >> 6;
-    let k = ((index + 1) * bitLen - 1) >>> 6;
-    let l = offset ^ j << 6;
-    if (j == k) {
-        return data[j].shiftRightUnsigned(l).and(maxEntryValue).toInt();
-    }
-    else {
-        let shiftLeft = 64 - l;
-        const v = data[j].shiftRightUnsigned(l).or(data[k].shiftLeft(shiftLeft));
-        return v.and(maxEntryValue).toInt();
-    }
+function seek(blockstates, indexLength, index, maxEntryValue = long_default().fromNumber(1).shiftLeft(indexLength).sub(1)) {
+    const blocksPerLong = Math.floor(64 / indexLength);
+    const longIndex = Math.floor(index / blocksPerLong);
+    const padding = Math.floor((index - longIndex * blocksPerLong) * indexLength);
+    const long = blockstates[longIndex];
+    const blockIndex = (long.shiftRightUnsigned(padding)).and(maxEntryValue);
+    return blockIndex;
 }
 /**
  * Legacy algorithm to seek block state from chunk
@@ -27695,23 +45912,6 @@ function seekLegacy(blocks, data, add, i) {
     }
     let additional = !add ? 0 : getFromNibbleArray(add, i);
     return (additional << 12) | ((blocks[i] & 255) << 4) | getFromNibbleArray(data, i);
-}
-const MULTIPLY_DE_BRUIJN_BIT_POSITION = [0, 1, 28, 2, 29, 14, 24, 3, 30, 22, 20, 15, 25, 17, 4, 8, 31, 27, 13, 23, 21, 19, 16, 7, 26, 12, 18, 6, 11, 5, 10, 9];
-function log2DeBruijn(value) {
-    function isPowerOfTwo(v) {
-        return v !== 0 && (v & v - 1) === 0;
-    }
-    function smallestEncompassingPowerOfTwo(value) {
-        let i = value - 1;
-        i = i | i >> 1;
-        i = i | i >> 2;
-        i = i | i >> 4;
-        i = i | i >> 8;
-        i = i | i >> 16;
-        return i + 1;
-    }
-    value = isPowerOfTwo(value) ? value : smallestEncompassingPowerOfTwo(value);
-    return MULTIPLY_DE_BRUIJN_BIT_POSITION[long_default().fromInt(value).multiply(125613361).shiftRight(27).and(31).low];
 }
 function getChunkOffset(buffer, x, z) {
     // get internal chunk offset should be in the rest of 5 bits (from >> 5)
@@ -27733,11 +45933,11 @@ function getChunkOffset(buffer, x, z) {
     }
 }
 class WorldReader {
-    constructor(fs) {
-        this.fs = fs;
-    }
     static async create(path) {
         return new WorldReader(await openFileSystem(path));
+    }
+    constructor(fs) {
+        this.fs = fs;
     }
     /**
      * Get region data frame
@@ -27794,7 +45994,7 @@ class WorldReader {
     }
     async getAdvancementsData() {
         const files = await this.fs.listFiles("advancements");
-        return Promise.all(files
+        return Promise.all(files.filter(f => f.endsWith(".dat"))
             .map((f) => this.fs.readFile(this.fs.join("advancements", f)).then((b) => deserialize(b))));
     }
 }
@@ -27834,6 +46034,43 @@ var RegionReader;
     }
     RegionReader.getSection = getSection;
     /**
+     * Returns the palette, blockStates and bitLength for a section
+     * @param section The chunk section
+     */
+    function getSectionInformation(section) {
+        let blockStates = section.BlockStates;
+        let palette = section.Palette;
+        if (blockStates == undefined) {
+            blockStates = (section.block_states || {}).data;
+        }
+        if (palette == undefined) {
+            palette = (section.block_states || {}).palette;
+        }
+        if (palette == undefined || blockStates == undefined) {
+            palette = [];
+            blockStates = [];
+        }
+        let bitLength = Math.ceil(Math.log2(palette.length));
+        if (bitLength < 4) {
+            bitLength = 4;
+        }
+        return {
+            palette: palette,
+            blockStates: blockStates,
+            bitLength: bitLength
+        };
+    }
+    /**
+     * Create an array of block ids from the chunk section given
+     * @param section The chunk section
+     */
+    function getSectionBlockIdArray(section) {
+        const sectionInformation = getSectionInformation(section);
+        const vector = createBitVector(sectionInformation.blockStates, sectionInformation.bitLength);
+        return vector;
+    }
+    RegionReader.getSectionBlockIdArray = getSectionBlockIdArray;
+    /**
      * Walk through all the position in this chunk and emit all the id in every position.
      * @param section The chunk section
      * @param reader The callback which will receive the position + state id.
@@ -27847,8 +46084,7 @@ var RegionReader;
             seekFunc = (i) => seekLegacy(blocks, data, add, i);
         }
         else {
-            let blockStates = section.BlockStates;
-            let vector = createBitVector(blockStates, computeBitLen(section.Palette, blockStates));
+            const vector = getSectionBlockIdArray(section);
             seekFunc = (i) => vector[i];
         }
         for (let i = 0; i < 4096; ++i) {
@@ -27866,12 +46102,11 @@ var RegionReader;
      * @param index The chunk index
      */
     function seekBlockStateId(section, index) {
-        if ("BlockStates" in section) {
-            const blockStates = section.BlockStates;
-            const bitLen = computeBitLen(section.Palette, blockStates);
-            return seek(blockStates, bitLen, index);
+        if ("Blocks" in section) {
+            return seekLegacy(section.Blocks, section.Data, section.Add, index);
         }
-        return seekLegacy(section.Blocks, section.Data, section.Add, index);
+        const sectionInformation = getSectionInformation(section);
+        return Number(seek(sectionInformation.blockStates, sectionInformation.bitLength, index));
     }
     RegionReader.seekBlockStateId = seekBlockStateId;
     /**
@@ -27880,9 +46115,9 @@ var RegionReader;
      * @param index The chunk index, which is a number in range [0, 4096)
      */
     function seekBlockState(section, index) {
-        const blockStates = section.BlockStates;
-        const bitLen = computeBitLen(section.Palette, blockStates);
-        return section.Palette[seek(section.BlockStates, bitLen, index)];
+        const sectionInformation = getSectionInformation(section);
+        const blockStateId = seekBlockStateId(section, index);
+        return sectionInformation.palette[blockStateId];
     }
     RegionReader.seekBlockState = seekBlockState;
 })(RegionReader || (RegionReader = {}));
@@ -57817,7 +76052,7 @@ class Bone extends three_module_Object3D {
 
 }
 
-class DataTexture extends three_module_Texture {
+class three_module_DataTexture extends three_module_Texture {
 
 	constructor( data = null, width = 1, height = 1, format, type, mapping, wrapS, wrapT, magFilter = three_module_NearestFilter, minFilter = three_module_NearestFilter, anisotropy, encoding ) {
 
@@ -58005,7 +76240,7 @@ class Skeleton {
 		const boneMatrices = new Float32Array( size * size * 4 ); // 4 floats per RGBA pixel
 		boneMatrices.set( this.boneMatrices ); // copy current values
 
-		const boneTexture = new DataTexture( boneMatrices, size, size, three_module_RGBAFormat, three_module_FloatType );
+		const boneTexture = new three_module_DataTexture( boneMatrices, size, size, three_module_RGBAFormat, three_module_FloatType );
 		boneTexture.needsUpdate = true;
 
 		this.boneMatrices = boneMatrices;
@@ -58320,7 +76555,7 @@ const _inverseMatrix$1 = /*@__PURE__*/ new three_module_Matrix4();
 const _ray$1 = /*@__PURE__*/ new three_module_Ray();
 const _sphere$1 = /*@__PURE__*/ new three_module_Sphere();
 
-class Line extends three_module_Object3D {
+class three_module_Line extends three_module_Object3D {
 
 	constructor( geometry = new three_module_BufferGeometry(), material = new LineBasicMaterial() ) {
 
@@ -58529,7 +76764,7 @@ class Line extends three_module_Object3D {
 const _start = /*@__PURE__*/ new three_module_Vector3();
 const _end = /*@__PURE__*/ new three_module_Vector3();
 
-class LineSegments extends Line {
+class LineSegments extends three_module_Line {
 
 	constructor( geometry, material ) {
 
@@ -58576,7 +76811,7 @@ class LineSegments extends Line {
 
 }
 
-class LineLoop extends Line {
+class LineLoop extends three_module_Line {
 
 	constructor( geometry, material ) {
 
@@ -68263,7 +86498,7 @@ class DataTextureLoader extends three_module_Loader {
 
 		const scope = this;
 
-		const texture = new DataTexture();
+		const texture = new three_module_DataTexture();
 
 		const loader = new FileLoader( this.manager );
 		loader.setResponseType( 'arraybuffer' );
@@ -70309,7 +88544,7 @@ class ObjectLoader extends three_module_Loader {
 
 								// special case: handle array of data textures for cube textures
 
-								imageArray.push( new DataTexture( deserializedImage.data, deserializedImage.width, deserializedImage.height ) );
+								imageArray.push( new three_module_DataTexture( deserializedImage.data, deserializedImage.width, deserializedImage.height ) );
 
 							}
 
@@ -70406,7 +88641,7 @@ class ObjectLoader extends three_module_Loader {
 
 								// special case: handle array of data textures for cube textures
 
-								imageArray.push( new DataTexture( deserializedImage.data, deserializedImage.width, deserializedImage.height ) );
+								imageArray.push( new three_module_DataTexture( deserializedImage.data, deserializedImage.width, deserializedImage.height ) );
 
 							}
 
@@ -70480,7 +88715,7 @@ class ObjectLoader extends three_module_Loader {
 
 					if ( image && image.data ) {
 
-						texture = new DataTexture();
+						texture = new three_module_DataTexture();
 
 					} else {
 
@@ -70752,7 +88987,7 @@ class ObjectLoader extends three_module_Loader {
 
 			case 'Line':
 
-				object = new Line( getGeometry( data.geometry ), getMaterial( data.material ) );
+				object = new three_module_Line( getGeometry( data.geometry ), getMaterial( data.material ) );
 
 				break;
 
@@ -76050,13 +94285,13 @@ class DirectionalLightHelper extends three_module_Object3D {
 
 		const material = new LineBasicMaterial( { fog: false, toneMapped: false } );
 
-		this.lightPlane = new Line( geometry, material );
+		this.lightPlane = new three_module_Line( geometry, material );
 		this.add( this.lightPlane );
 
 		geometry = new three_module_BufferGeometry();
 		geometry.setAttribute( 'position', new three_module_Float32BufferAttribute( [ 0, 0, 0, 0, 0, 1 ], 3 ) );
 
-		this.targetLine = new Line( geometry, material );
+		this.targetLine = new three_module_Line( geometry, material );
 		this.add( this.targetLine );
 
 		this.update();
@@ -76441,7 +94676,7 @@ class Box3Helper extends LineSegments {
 
 }
 
-class PlaneHelper extends Line {
+class PlaneHelper extends three_module_Line {
 
 	constructor( plane, size = 1, hex = 0xffff00 ) {
 
@@ -76514,7 +94749,7 @@ class ArrowHelper extends three_module_Object3D {
 
 		this.position.copy( origin );
 
-		this.line = new Line( _lineGeometry, new LineBasicMaterial( { color: color, toneMapped: false } ) );
+		this.line = new three_module_Line( _lineGeometry, new LineBasicMaterial( { color: color, toneMapped: false } ) );
 		this.line.matrixAutoUpdate = false;
 		this.add( this.line );
 
@@ -81064,6 +99299,8 @@ if(BufferGeometryUtils_namespaceObject.BufferGeometryUtils != undefined){
 
 
 
+
+
 })();
 
 var __webpack_exports__BlockModelFactory = __webpack_exports__.Yc;
@@ -81072,6 +99309,7 @@ var __webpack_exports__CSG = __webpack_exports__.yU;
 var __webpack_exports__CSGNode = __webpack_exports__.KO;
 var __webpack_exports__Earcut = __webpack_exports__.Tl;
 var __webpack_exports__FileSystem = __webpack_exports__.Wd;
+var __webpack_exports__ImageInBrowser = __webpack_exports__.OB;
 var __webpack_exports__JSZip = __webpack_exports__.$c;
 var __webpack_exports__JSZipUtils = __webpack_exports__.nd;
 var __webpack_exports__ModelLoader = __webpack_exports__.h9;
@@ -81088,6 +99326,6 @@ var __webpack_exports__readIcon = __webpack_exports__.f7;
 var __webpack_exports__readPackMeta = __webpack_exports__.Y3;
 var __webpack_exports__readPackMetaAndIcon = __webpack_exports__.mt;
 var __webpack_exports__resolveFileSystem = __webpack_exports__.ox;
-export { __webpack_exports__BlockModelFactory as BlockModelFactory, __webpack_exports__BufferGeometryUtils as BufferGeometryUtils, __webpack_exports__CSG as CSG, __webpack_exports__CSGNode as CSGNode, __webpack_exports__Earcut as Earcut, __webpack_exports__FileSystem as FileSystem, __webpack_exports__JSZip as JSZip, __webpack_exports__JSZipUtils as JSZipUtils, __webpack_exports__ModelLoader as ModelLoader, __webpack_exports__OrbitControls as OrbitControls, __webpack_exports__RegionReader as RegionReader, __webpack_exports__ResourceLocation as ResourceLocation, __webpack_exports__ResourceManager as ResourceManager, __webpack_exports__ResourcePack as ResourcePack, __webpack_exports__THREE as THREE, __webpack_exports__WorldReader as WorldReader, __webpack_exports__deserialize as deserialize, __webpack_exports__openFileSystem as openFileSystem, __webpack_exports__readIcon as readIcon, __webpack_exports__readPackMeta as readPackMeta, __webpack_exports__readPackMetaAndIcon as readPackMetaAndIcon, __webpack_exports__resolveFileSystem as resolveFileSystem };
+export { __webpack_exports__BlockModelFactory as BlockModelFactory, __webpack_exports__BufferGeometryUtils as BufferGeometryUtils, __webpack_exports__CSG as CSG, __webpack_exports__CSGNode as CSGNode, __webpack_exports__Earcut as Earcut, __webpack_exports__FileSystem as FileSystem, __webpack_exports__ImageInBrowser as ImageInBrowser, __webpack_exports__JSZip as JSZip, __webpack_exports__JSZipUtils as JSZipUtils, __webpack_exports__ModelLoader as ModelLoader, __webpack_exports__OrbitControls as OrbitControls, __webpack_exports__RegionReader as RegionReader, __webpack_exports__ResourceLocation as ResourceLocation, __webpack_exports__ResourceManager as ResourceManager, __webpack_exports__ResourcePack as ResourcePack, __webpack_exports__THREE as THREE, __webpack_exports__WorldReader as WorldReader, __webpack_exports__deserialize as deserialize, __webpack_exports__openFileSystem as openFileSystem, __webpack_exports__readIcon as readIcon, __webpack_exports__readPackMeta as readPackMeta, __webpack_exports__readPackMetaAndIcon as readPackMetaAndIcon, __webpack_exports__resolveFileSystem as resolveFileSystem };
 
 //# sourceMappingURL=node-modules.browser.js.map

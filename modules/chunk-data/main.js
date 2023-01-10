@@ -26,53 +26,40 @@ class ChunkData {
 	}
 	
 	add_section(section, output){
-		// These for some reason need mapping as they're defined wrong in RegionReader in 1.18
-		if(section.Palette == undefined){
-			Object.defineProperty(section, 'Palette', {
-				get: function(){
-					return section.block_states.palette
-				}
-			});
-		}
-		if(section.BlockStates == undefined){
-			Object.defineProperty(section, 'BlockStates', {
-				get: function(){
-					return (section.block_states || {}).data
-				}
-			});
-		}
-		
-		
-		if(section.BlockStates == undefined){
-			return;
-		}
-		
 		const offset_y = (section.Y * 16)
 		
-		const palette = section.Palette
+		const palette = section.Palette || (section.block_states || {}).palette;
+		const block_states = section.BlockStates || (section.block_states || {}).data;
 		
-		if(section.BlockStates == undefined){
-			if(palette.length == 1 && palette[0] != undefined){
-				const block_data	=	palette[0];
-				if(block_data.Name == "minecraft:air"){
-					return;
-				}
-				for(let y = 0; y < 16; y++){
-					for(let z = 0; z < 16; z++){
-						for(let x = 0; x < 16; x++){
-							const block_x	=	x;
-							const block_y	=	y + offset_y;
-							const block_z	=	z;
-								
-							output.push(new ModelInstance(block_x, block_y, block_z, block_data));
+		if(block_states == undefined){
+			if(palette != undefined){
+				if(palette.length == 1 && palette[0] != undefined){
+					const block_data	=	palette[0];
+					if(block_data.Name == "minecraft:air"){
+						return;
+					}
+					for(let y = 0; y < 16; y++){
+						for(let z = 0; z < 16; z++){
+							for(let x = 0; x < 16; x++){
+								const block_x	=	x;
+								const block_y	=	y + offset_y;
+								const block_z	=	z;
+									
+								output.push(new ModelInstance(block_x, block_y, block_z, block_data));
+							}
 						}
 					}
 				}
 			}
 		} else {
-			console.log(palette)
-			console.log(section.BlockStates)
-			this.region_reader.walkBlockStateId(section, function(x, y, z, id){
+			let chunk_data_array = this.region_reader.getSectionBlockIdArray(section)
+			
+			for(let i = 0; i < chunk_data_array.length; i++){
+				let x = i & 15;
+				let y = (i >>> 8) & 15;
+				let z = (i >>> 4) & 15;
+				let id = chunk_data_array[i];
+				
 				const block_x	=	x;
 				const block_y	=	y + offset_y;
 				const block_z	=	z;
@@ -84,7 +71,7 @@ class ChunkData {
 						output.push(new ModelInstance(block_x, block_y, block_z, block_data));
 					}
 				}
-			});
+			}
 		}
 	}
 	
@@ -113,7 +100,7 @@ class ChunkData {
 					continue;
 				}
 				
-				const name = 	entity.Item.id;
+				const name = entity.Item.id;
 				const tags = (entity.Item.tag || {})
 				const custom_model_data = tags.CustomModelData || tags.custom_model_data || 0;
 				
@@ -156,8 +143,6 @@ class ChunkData {
 	}
 	
 	async get_chunk_data(x, z){
-		console.time();
-		
 		let blocks_promise = this.world.load_chunk_blocks(x, z);
 		let entities_promise = this.world.load_chunk_entities(x, z);
 		
@@ -167,10 +152,8 @@ class ChunkData {
 		
 		let chunk_data = [];
 		this.add_blocks(blocks, chunk_data);
-		console.log(chunk_data)
 		this.add_entities(entities, chunk_data);
 		
-		console.timeEnd();
 		const output = {}
 		output.x = x;
 		output.z = z;

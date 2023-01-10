@@ -495,7 +495,6 @@ class ChunkToModels {
 			}
 			
 			const geometry = model.geometry;
-			
 			if(geometry.userData.is_valid == false){
 				continue;
 			}

@@ -105,7 +105,7 @@ class ModelCache {
 		return model;
 	}
 	
-	get_model(model_name, options){
+	get_model(model_name, options = {}){
 		if(typeof model_name === "object"){
 			if(model_name instanceof Array){
 				return this.get_models(...arguments)
@@ -378,37 +378,39 @@ class ModelCache {
 						if(material.map == null){
 							return resolve(true)
 						}
-						const source = material.map.source;
-					
-						if(source.has_texture != true){
-							return resolve(true);
+						const texture = material.map;
+						
+						if(texture.userData.hasLoaded != undefined){
+							await texture.userData.hasLoaded;
 						}
+						
+						const source = texture.source;
+						let image_data;
+						if(source.data instanceof ImageData){
+							image_data = source.data;
+						}else{
+							let image = source.data;
+							let bitmap = await createImageBitmap(image)
 					
-						if(source.has_loaded == false){
-							await source.load_promise;
-						}
-					
-						let image = source.data;
-						let bitmap = await createImageBitmap(image)
-					
-						let canvas;
-						try{
-							canvas = document.createElement("canvas");
-						} catch(error){
+							let canvas;
 							try{
-								canvas = new OffscreenCanvas(1, 1);
+								canvas = document.createElement("canvas");
 							} catch(error){
-								throw "Unable to create canvas"
+								try{
+									canvas = new OffscreenCanvas(1, 1);
+								} catch(error){
+									throw "Unable to create canvas"
+								}
 							}
+					
+							let context = canvas.getContext("2d");
+							canvas.width = bitmap.width;
+							canvas.height = bitmap.height;
+							context.clearRect(0, 0, canvas.width, canvas.height);
+							context.drawImage(bitmap, 0, 0);
+					
+							image_data = context.getImageData(0, 0, bitmap.width, bitmap.height);
 						}
-					
-						let context = canvas.getContext("2d");
-						canvas.width = bitmap.width;
-						canvas.height = bitmap.height;
-						context.clearRect(0, 0, canvas.width, canvas.height);
-						context.drawImage(bitmap, 0, 0);
-					
-						let image_data = context.getImageData(0, 0, bitmap.width, bitmap.height);
 					
 						let transparency = false;
 						for(let i = 0; i < image_data.data.length; i += 4){
@@ -629,7 +631,7 @@ class ModelCache {
 			
 			let order = new Array(count);
 			
-			let normal = undefined;
+			let normal;
 			
 			for(let i = 0; i < count; i++){
 				let point = this.get_point(positions, normals, uvs, start, i, index_map);
@@ -704,10 +706,11 @@ class ModelCache {
 		
 		try{
 			const model_data = await block_loader.get_model_data(model_name);
-		
-			const model = await block_loader.get_model(model_data, options);
+			
+			const model = await block_loader.get_model(model_data, options, 0);
 		
 			const clean_model = await model_cleaner.clean_model(model);
+			
 			
 			await this.find_transparent_textures(clean_model.material);
 			
