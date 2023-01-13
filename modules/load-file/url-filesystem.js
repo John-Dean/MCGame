@@ -90,6 +90,9 @@ class URLFileSystem extends FileSystem {
 		return fetch(file_path)
 		.then(
 			function(response){
+				if(response.ok != true){
+					throw "Error reading file:" + name
+				}
 				if(!encoding){
 					return response.arrayBuffer()
 					.then(
@@ -134,6 +137,11 @@ class URLFileSystem extends FileSystem {
 					tree_path = tree_path[file_name]
 				}
 				return response;
+			}
+		)
+		.catch(
+			function(error){
+				throw error;		
 			}
 		)
 	}
