@@ -705,7 +705,7 @@ class ModelCache {
 		const model_cleaner = this.model_cleaner;
 		
 		try{
-			const model_data = await block_loader.get_model_data(model_name);
+			const model_data = await block_loader.get_model_data(model_name, "");
 			
 			const model = await block_loader.get_model(model_data, options, 0);
 		

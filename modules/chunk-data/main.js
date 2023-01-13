@@ -1,7 +1,7 @@
 import { RegionReader } from "/packaged/node-modules.js"
 import { WorldLoader } from "../world-loader/main.js"
 
-class ModelInstance {
+class Entity {
 	constructor(x, y, z, data){
 		this.x = x;
 		this.y = y;
@@ -31,48 +31,51 @@ class ChunkData {
 		const palette = section.Palette || (section.block_states || {}).palette;
 		const block_states = section.BlockStates || (section.block_states || {}).data;
 		
+		let chunk_data;
+		
 		if(block_states == undefined){
-			if(palette != undefined){
-				if(palette.length == 1 && palette[0] != undefined){
-					const block_data	=	palette[0];
-					if(block_data.Name == "minecraft:air"){
-						return;
-					}
-					for(let y = 0; y < 16; y++){
-						for(let z = 0; z < 16; z++){
-							for(let x = 0; x < 16; x++){
-								const block_x	=	x;
-								const block_y	=	y + offset_y;
-								const block_z	=	z;
-									
-								output.push(new ModelInstance(block_x, block_y, block_z, block_data));
-							}
-						}
-					}
-				}
+			if(palette == undefined){
+				return;
 			}
+			if(palette.length != 1 || palette[0] == undefined){
+				return;	
+			}
+			
+			const block_data	=	palette[0];
+			if(block_data.Name == "minecraft:air"){
+				return;
+			}
+			
+			chunk_data = new Uint8Array(16*16*16);
 		} else {
 			let chunk_data_array = this.region_reader.getSectionBlockIdArray(section)
+			chunk_data = chunk_data_array;
 			
-			for(let i = 0; i < chunk_data_array.length; i++){
-				let x = i & 15;
-				let y = (i >>> 8) & 15;
-				let z = (i >>> 4) & 15;
-				let id = chunk_data_array[i];
+			// for(let i = 0; i < chunk_data_array.length; i++){
+			// 	let x = i & 15;
+			// 	let y = (i >>> 8) & 15;
+			// 	let z = (i >>> 4) & 15;
+			// 	let id = chunk_data_array[i];
 				
-				const block_x	=	x;
-				const block_y	=	y + offset_y;
-				const block_z	=	z;
+			// 	const block_x	=	x;
+			// 	const block_y	=	y + offset_y;
+			// 	const block_z	=	z;
 				
-				const block_data	=	palette[id];
+			// 	const block_data	=	palette[id];
 				
-				if(block_data != undefined){
-					if(block_data.Name != "minecraft:air"){
-						output.push(new ModelInstance(block_x, block_y, block_z, block_data));
-					}
-				}
-			}
+			// 	if(block_data != undefined){
+			// 		if(block_data.Name != "minecraft:air"){
+			// 			output.push(new ModelInstance(block_x, block_y, block_z, block_data));
+			// 		}
+			// 	}
+			// }
 		}
+		
+		output.push({
+			offset_y: offset_y,
+			data: chunk_data,
+			palette: palette	
+		})
 	}
 	
 	add_blocks(blocks, output){
@@ -83,9 +86,9 @@ class ChunkData {
 		}
 	}
 	
-	add_entities(entities_object, output){
-		const x_offset = (entities_object.Position[0] * 16);
-		const z_offset = (entities_object.Position[1] * 16);
+	add_entities(entities_object, output, chunk_x, chunk_z){		
+		const x_offset = (chunk_x * 16);
+		const z_offset = (chunk_z * 16);
 		
 		const entities = entities_object.Entities || [];
 		for(let i = 0; i < entities.length; i++){
@@ -136,29 +139,34 @@ class ChunkData {
 				}
 				
 				if(name != "minecraft:air"){
-					output.push(new ModelInstance(x, y, z, data));
+					output.push(new Entity(x, y, z, data));
 				}
 			}
 		}
 	}
 	
 	async get_chunk_data(x, z){
-		let blocks_promise = this.world.load_chunk_blocks(x, z);
-		let entities_promise = this.world.load_chunk_entities(x, z);
+		let blocks = await this.world.load_chunk_blocks(x, z);
+		let entities;
+		if(blocks.Level.Entities != undefined){
+			entities = blocks.Level;
+		} else {
+			entities = await this.world.load_chunk_entities(x, z); ;
+		}
 		
-		
-		let blocks = await blocks_promise;
-		let entities = await entities_promise;
-		
-		let chunk_data = [];
-		this.add_blocks(blocks, chunk_data);
-		this.add_entities(entities, chunk_data);
+		let chunk_data = {
+			blocks: [],
+			entities: []
+		};
+		this.add_blocks(blocks, chunk_data.blocks);
+		this.add_entities(entities, chunk_data.entities, x, z);
 		
 		const output = {}
 		output.x = x;
 		output.z = z;
 		output.data = chunk_data;
 		
+		// console.log(output)
 		return output;
 		// console.log(blocks)
 	}

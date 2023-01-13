@@ -26,27 +26,20 @@ class BlockLoader {
 	 * @return  {Object}               Contents of the blockstate file for that model
 	 */
 	async get_blockstate_data(model_name, is_item = false){
-		let replace_string = "blockstates";
-		if(is_item){
-			replace_string = "models/item";
-		}
-		
-		let model_file_info = ResourceLocation.ofBlockModelPath(model_name);
-		let blockstate_file_path = model_file_info.path.replace("models/block", replace_string);
-		blockstate_file_path = "/assets/minecraft/" + blockstate_file_path;
-		
-		let blockstate = {};
-		for(let i = 0; i < this.resource_manager.list.length; i++){
-			let resource_pack	=		this.resource_manager.list[i];
-			let exists	=	await resource_pack.source.fs.existsFile(blockstate_file_path);
-			if(exists){
-				blockstate = 	await resource_pack.source.fs.readFile(blockstate_file_path, "utf-8");
-				blockstate = JSON.parse(blockstate);
-				break;
+		try{
+			let model_file_info;
+			if(is_item){
+				model_file_info = ResourceLocation.ofItemModelPath(model_name);
+			} else {
+				model_file_info = ResourceLocation.ofBlockStatePath(model_name);
 			}
+			
+			let file = await this.resource_manager.get(model_file_info);
+			let file_contents = await file.read("utf-8");
+			return JSON.parse(file_contents);
+		}catch(error){
+			return {error: true};	
 		}
-					
-		return blockstate;
 	}
 	
 	/**
@@ -70,7 +63,7 @@ class BlockLoader {
 	 * @return  {Object}              The model data from the texture pack
 	 */
 	get_model_data(model_name){
-		return this.model_loader.loadModel(model_name);
+		return this.model_loader.loadModel(...arguments);
 	}
 	
 	/**

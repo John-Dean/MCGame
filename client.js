@@ -6,7 +6,7 @@ import { MapLoader } from "./modules/map-loader/main.js";
 
 let map_loader = new MapLoader();
 await map_loader.add_resource_pack("/assets/resource-pack/")
-await map_loader.load_world("/assets/Sample World 2/");
+await map_loader.load_world("/assets/Sample World 3/");
 console.log(map_loader)
 
 console.log(await map_loader.get_world_data())
@@ -16,10 +16,10 @@ const width = window.innerWidth;
 const height = window.innerHeight;
 
 let range = {
-	x_low: -1,
-	x_high: 0,
-	z_low: -1,
-	z_high: 0
+	x_low: -2,
+	x_high: 2,
+	z_low: -2,
+	z_high: 2
 }
 
 for(let x = range.x_low; x <= range.x_high; x++){

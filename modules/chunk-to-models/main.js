@@ -21,78 +21,77 @@ const node_to_csg = function(node){
 class Neighbours extends Object {
 }
 
-class Grid extends Object {
-	constructor(){
-		super();
-		Object.defineProperty(this, 'lowest_point', {
-			value: -64,
-			writable: true,
-			enumerable: false
-		});
-		Object.defineProperty(this, 'highest_point', {
-			value: 256,
-			writable: true,
-			enumerable: false
-		});
-		Object.defineProperty(this, 'interval', {
-			value: 16,
-			writable: true,
-			enumerable: false
-		});
+
+class SectionGrid {
+	constructor(offset_y){
+		this.y = offset_y;
+		this.data = [];
 		
-		Object.defineProperty(this, 'x_low', {
-			value: undefined,
-			writable: true,
-			enumerable: false
-		});
-		Object.defineProperty(this, 'x_high', {
-			value: undefined,
-			writable: true,
-			enumerable: false
-		});
-		Object.defineProperty(this, 'z_low', {
-			value: undefined,
-			writable: true,
-			enumerable: false
-		});
-		Object.defineProperty(this, 'z_high', {
-			value: undefined,
-			writable: true,
-			enumerable: false
-		});
-	}
-	
-	subdivide(){
-		const low = this.lowest_point;
-		const high = this.highest_point;
-		const interval = this.interval;
+		let grid = this.data;
 		
-		let output = [];
-		for(let i = low; i < high; i += interval){
-			let chunk = [];
-			for(let n = 0; n < interval; n++){
-				let y_value = i + n;
-				const data = this[y_value];
-				if(data == undefined){
-					continue;
+		for(let y = 0; y < 16; y++){
+			grid[y] = [];
+			for(let z = 0; z < 16; z++){
+				grid[y][z] = [];
+				for(let x = 0; x < 16; x++){
+					grid[y][z][x] = new GridArray();
 				}
-				chunk.push(data);
-			}
-			if(chunk.length > 0){
-				output.push(chunk);
 			}
 		}
-		return output;
 	}
 	
-	identify_band(y){
-		const low = this.lowest_point;
-		const high = this.highest_point;
-		const interval = this.interval;
+	async load_data(data, palette, model_cache, process_geometry, check_blacklist){
+		let grid = this.data;
 		
-		let offset = y - low;
-		let band = Math.floor(offset / interval);
-		return band;
+		const palette_blockstate_promises = palette.map(model_data => model_cache.get_blockstates(model_data.Name));
+		const palette_blockstates = await Promise.all(palette_blockstate_promises);
+		
+		for(let i = 0; i < data.length; i++){
+			const x = i & 15;
+			const y = (i >>> 8) & 15;
+			const z = (i >>> 4) & 15;
+			const id = data[i];
+			const model_data = palette[id];
+			const blockstate = palette_blockstates[id];
+			
+			if(blockstate.error == true){
+				continue;
+			}
+			
+			const name = model_data.Name;
+			const options = model_data.Properties || {};
+			
+			let variant = model_cache.pick_variant(blockstate, options);
+			if(variant.length == 0){
+				console.log(name, blockstate, variant, options);
+				continue;
+			}
+			
+			let model = model_cache.get_model(variant)
+			if(ModelCache.was_cache_miss(model)){
+				model = await model;
+			}
+			
+			if(check_blacklist(model)){
+				continue;
+			}
+			
+			const geometry = model.geometry;
+			if(geometry.userData.is_valid == false){
+				continue;
+			}
+			
+			process_geometry(geometry, grid[y][z][x]);
+		}
+		
+		return this;
+	}
+}
+
+class Grid {
+	constructor(){
+		this.block_sections = {};
+		this.entities = [];
 	}
 }
 
@@ -199,54 +198,38 @@ class ChunkToModels {
 		return buffer_geometry;
 	}
 	
+	check_blacklist(model){
+		return false;
+	}
 	
 	find_in_grid(x, y, z, grid){
 		if(grid == undefined){
 			return { is_blank: true };
 		}
 		
-		let y_info;
-		let z_info;
-		let x_info = { is_blank: true };
 		
-		
-		/* z */{
-			if(z < 0){
-				return this.find_in_grid(x, y, z + 16, grid.z_low);
-			} else if(z >= 0 && z < 16){
-				/* y */{
-					y_info = grid[y];
-					if(y_info == undefined){
-						return { is_blank: true };
-					}
-				}
-				z_info = y_info[z];
-			} else if(z >= 16){
-				return this.find_in_grid(x, y, z - 16, grid.z_high);
-			}
-			
-			
-			if(z_info == undefined || (typeof z_info === "object" && z_info.is_blank == true)){
-				return { is_blank: true };
-			}
+		if(z < 0){
+			return this.find_in_grid(x, y, z + 16, grid.z_low);
+		}
+		if(z >= 16){
+			return this.find_in_grid(x, y, z - 16, grid.z_high);
+		}
+		if(x < 0){
+			return this.find_in_grid(x + 16, y, z, grid.x_low);
+		}
+		if(x >= 16){
+			return this.find_in_grid(x - 16, y, z, grid.x_high);
 		}
 		
-		/* x */{
-			if(x < 0){
-				return this.find_in_grid(x + 16, y, z, grid.x_low);
-			} else if(x >= 0 && x < 16){
-				x_info = z_info[x];
-			} else if(x >= 16){
-				return this.find_in_grid(x - 16, y, z, grid.x_high);
-			}
-			
-			
-			if(x_info == undefined || (typeof z_info === "object" && z_info.is_blank == true)){
-				return { is_blank: true };
-			}
+		
+		let section_y = Math.floor(y / 16) * 16;
+		let offset_y = y - section_y;
+		
+		if(grid.block_sections[section_y] == undefined){
+			return { is_blank: true };
 		}
 		
-		return x_info;
+		return grid.block_sections[section_y].data[offset_y][z][x];
 	}
 	
 	get_neighbours(grid, x, y, z){
@@ -282,7 +265,7 @@ class ChunkToModels {
 		const groups = geometry.groups;
 		const base_data = geometry.userData;
 		if(base_data.groups == undefined){
-			base_data.groups = []	
+			base_data.groups = []
 		}
 		
 		const neighbours = this.get_neighbours(grid, x, y, z);
@@ -357,8 +340,7 @@ class ChunkToModels {
 					parent: group_data,
 					x: x,
 					y: y,
-					z: z,
-					band: grid.identify_band(y)
+					z: z
 				};
 					
 				if(is_transparent){
@@ -377,36 +359,26 @@ class ChunkToModels {
 	}
 	
 	
-	merge_valid_sides(valid_sides){
+	merge_valid_sides(sections){
 		let output = [];
-		if(valid_sides.transparent.geometries.length > 0){
-			let transparent_geometry = BufferGeometryUtils.mergeBufferGeometries(valid_sides.transparent.geometries, true);
-			for(let i = 0; i < transparent_geometry.groups.length; i++){
-				transparent_geometry.groups[i].materialIndex = 	valid_sides.transparent.material_indexes[i];
-				valid_sides.transparent.geometries[i].dispose();
-			}
-			// transparent_geometry = BufferGeometryUtils.mergeGroups(transparent_geometry)
-			output.push(transparent_geometry);
-			transparent_geometry.userData = {
-				groups: transparent_geometry.userData.mergedUserData
-			}
-		}
+		for(let i = 0; i < sections.length; i++){
+			let section = sections[i];
 			
-		if(valid_sides.opaque.geometries.length > 0){
-			let opaque_geometry = BufferGeometryUtils.mergeBufferGeometries(valid_sides.opaque.geometries, true);
-			for(let i = 0; i < opaque_geometry.groups.length; i++){
-				opaque_geometry.groups[i].materialIndex = 	valid_sides.opaque.material_indexes[i];
-				valid_sides.opaque.geometries[i].dispose();
-			}
-		
-			// opaque_geometry = BufferGeometryUtils.mergeGroups(opaque_geometry)
-			output.push(opaque_geometry);
-			opaque_geometry.userData = {
-				groups: opaque_geometry.userData.mergedUserData
+			for(let name in section){
+				if(section[name].geometries.length > 0){
+					let geometry = BufferGeometryUtils.mergeBufferGeometries(section[name].geometries, true);
+					for(let i = 0; i < geometry.groups.length; i++){
+						geometry.groups[i].materialIndex = 	section[name].material_indexes[i];
+						section[name].geometries[i].dispose();
+					}
+					// transparent_geometry = BufferGeometryUtils.mergeGroups(transparent_geometry)
+					output.push(geometry);
+					geometry.userData = {
+						groups: geometry.userData.mergedUserData
+					}
+				}
 			}
 		}
-		
-		console.log(valid_sides)
 		
 		return output;
 	}
@@ -417,17 +389,29 @@ class ChunkToModels {
 		let materials = this.materials;
 		
 		let trimmed_geometries = this.merge_valid_sides(geometries);
-		console.log(trimmed_geometries)
 		
-		let meshes = new THREE.Group();
+		
+		let blocks = new THREE.Group();
+		blocks.name = "blocks";
 		for(let i = 0; i < trimmed_geometries.length; i++){
 			let mesh = new THREE.Mesh(trimmed_geometries[i], materials);
 			
 			// mesh.material = wireframe;
-			meshes.add(mesh)
+			blocks.add(mesh)
 		}
 		
-		return meshes
+		let entities = new THREE.Group();
+		entities.name = "entities";
+		for(let i = 0; i < grid.entities.length; i++){
+			let mesh = new THREE.Mesh(grid.entities[i], materials);
+			entities.push(mesh);
+		}
+		
+		let output = new THREE.Group();
+		output.add(blocks)
+		output.add(entities)
+		
+		return output
 	}
 	
 	process_geometry(geometry, grid_cell){
@@ -463,24 +447,58 @@ class ChunkToModels {
 		}
 	}
 	
-	async convert_to_grid(chunk_data){
-		const output_grid = new Grid();
+	async add_blocks_to_grid(block_data, grid){
+		let promises = [];
+		for(let i = 0; i < block_data.length; i++){
+			const section = block_data[i];
+			
+			const offset_y = section.offset_y;
+			const data = section.data;
+			const palette = section.palette;
+			
+			const section_grid = new SectionGrid(offset_y);
+			let promise = section_grid.load_data(data, palette, this.model_cache, this.process_geometry, this.check_blacklist);
+			promise.then(
+				function(){
+					grid.block_sections[offset_y] = section_grid;
+				}
+			)
+			
+			promises.push(promise)
+		}
 		
-		const data = chunk_data.data;
-		for(let i = 0; i < data.length; i++){
-			const instance = data[i];
-			const model_data = instance.data;
-			const x = instance.x;
-			const y = instance.y;
-			const z = instance.z;
+		await Promise.all(promises);
+	}
+	
+	async add_geometry_to_grid_section(geometry, grid, x, y, z){
+		let section_y = Math.floor(y / 16) * 16;
+		let offset_y = y - section_y;
+		if(grid.block_sections[section_y] == undefined){
+			return false;
+		}
+		this.process_geometry(geometry, grid.block_sections[section_y].data[offset_y][z][x]);
+		return true;
+	}
+	
+	
+	async add_entities_to_grid(entities, grid){
+		for(let i = 0; i < entities.length; i++){
+			const entity = entities[i];
+			const model_data = entity.data;
+			const x = entity.x;
+			const y = entity.y;
+			const z = entity.z;
 			
 			const name = model_data.Name;
 			const options = model_data.Properties || {};
-			const is_item = options.is_item || false;
 			
-			let blockstate = this.model_cache.get_blockstates(name, is_item);
+			let blockstate = this.model_cache.get_blockstates(name, true);
 			if(ModelCache.was_cache_miss(blockstate)){
 				blockstate = await blockstate;
+			}
+			
+			if(blockstate.error == true){
+				continue;
 			}
 			
 			let variant = this.model_cache.pick_variant(blockstate, options);
@@ -494,62 +512,98 @@ class ChunkToModels {
 				model = await model;
 			}
 			
+			if(this.check_blacklist(model)){
+				continue;
+			}
+			
 			const geometry = model.geometry;
 			if(geometry.userData.is_valid == false){
 				continue;
 			}
 			
-			if(output_grid[y] == undefined){
-				output_grid[y] = []
-			}
-			if(output_grid[y][z] == undefined){
-				output_grid[y][z] = []
-			}
-			if(output_grid[y][z][x] == undefined){
-				output_grid[y][z][x] = new GridArray();
+			let is_block_aligned = false;
+			if(x - Math.floor(x) == 0){
+				if(y - Math.floor(x) == 0){
+					if(z - Math.floor(x) == 0){
+						is_block_aligned = true;
+					}
+				}
 			}
 			
-			this.process_geometry(geometry, output_grid[y][z][x]);
+			if(is_block_aligned){
+				is_block_aligned = add_entity_to_grid_section(geometry, grid, x, y, z);
+			}
+			
+			if(!is_block_aligned){
+				geometry_clone = geometry.clone();
+				geometry_clone.translate(x, y, z)
+				
+				grid.entities.push(geometry_clone)
+			}
 		}
-		
-		return output_grid;
 	}
 	
-	extract_geometries_from_grid(grid){
-		// Expand this function to also take neighbouring grids
-		const opaque = {
-			geometries: [],
-			material_indexes: []
-		}
-		const transparent = {
-			geometries: [],
-			material_indexes: []
-		}
+	async convert_to_grid(chunk_data){
+		const grid = new Grid();
 		
-		for(let y in grid){
-			const y_data = grid[y];
-			for(let z in y_data){
-				const z_data = y_data[z];
-				for(let x in z_data){
-					const stored_geometries = z_data[x].geometries;
+		const blocks = chunk_data.data.blocks;
+		const entities = chunk_data.data.entities;
+		
+		await this.add_blocks_to_grid(blocks, grid);
+		await this.add_entities_to_grid(entities, grid);
+		
+		return grid;
+	}
+	
+	extract_geometries_from_grid(parent_grid){
+		let output = [];
+		let sections = parent_grid.block_sections;
+		for(let offset in sections){
+			// Expand this function to also take neighbouring grids
+			const opaque = {
+				geometries: [],
+				material_indexes: []
+			}
+			const transparent = {
+				geometries: [],
+				material_indexes: []
+			}
+			
+			output.push({
+				opaque: opaque,
+				transparent: transparent
+			})
+			
+			let section = sections[offset];
+			
+			let grid = section.data;
+			let offset_y = section.y;
+		
+			for(let y in grid){
+				const y_data = grid[y];
+				for(let z in y_data){
+					const z_data = y_data[z];
+					for(let x in z_data){
+						const stored_geometries = z_data[x].geometries;
 					
-					const position_x = Number(x)
-					const position_y = Number(y)
-					const position_z = Number(z)
-					
-					for(let i = 0; i < stored_geometries.length; i++){
-						const parent_geometry = stored_geometries[i];
+						const position_x = Number(x)
+						const position_y = Number(y) + offset_y;
+						const position_z = Number(z)
 						
-						this.geometry_find_valid_sides(parent_geometry, grid, position_x, position_y, position_z, opaque, transparent);
+					
+						for(let i = 0; i < stored_geometries.length; i++){
+							const parent_geometry = stored_geometries[i];
+						
+							this.geometry_find_valid_sides(parent_geometry, parent_grid, position_x, position_y, position_z, opaque, transparent);
+						}
 					}
 				}
 			}
 		}
 		
-		return {
-			opaque: opaque,
-			transparent: transparent
-		};
+		// console.log(output)
+		
+		return output;
 	}
 }
  
