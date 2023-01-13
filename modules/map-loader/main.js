@@ -96,12 +96,15 @@ class MapLoader {
 	}
 	
 	async load_chunk(x, z){
+		console.time("chunk-end-to-end")
 		let chunk_models = await this.get_chunk_model(x, z);
 		
 		
 		console.time("chunk-remeshing")
 		let remeshed_chunk_models = this.mesher.remesh(chunk_models)
 		console.timeEnd("chunk-remeshing")
+		
+		console.timeEnd("chunk-end-to-end")
 		return remeshed_chunk_models;
 	}
 	
