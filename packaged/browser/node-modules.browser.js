@@ -44329,13 +44329,12 @@ function loadTexture(textureData, textureLoader) {
             .then(function (fileContents) {
             const decodedContents = decodeImage(fileContents);
             if (decodedContents == undefined) {
-                return;
+                throw "Error decoding the image";
             }
             const width = decodedContents === null || decodedContents === void 0 ? void 0 : decodedContents.width;
             const height = decodedContents === null || decodedContents === void 0 ? void 0 : decodedContents.height;
             if (width == undefined || height == undefined) {
-                // Unable to decode the image
-                return;
+                throw "Error finding width or height";
             }
             const imageDataArray = decodedContents.getBytes();
             const imageDataArrayClamped = new Uint8ClampedArray(imageDataArray);
@@ -44344,6 +44343,7 @@ function loadTexture(textureData, textureLoader) {
                 texture.image = imageData;
                 texture.needsUpdate = true;
             }
+            return texture;
         })
             .then(resolveFn)
             .catch(rejectFn);
@@ -44351,6 +44351,7 @@ function loadTexture(textureData, textureLoader) {
     if (texture == undefined) {
         texture = new Texture();
     }
+    // Overwrite to true as Texture defaults to true and DataTexture to false
     texture.flipY = true;
     texture.userData.hasLoaded = promise;
     return texture;
@@ -46214,61 +46215,70 @@ class ResourceManager {
  * The Minecraft used object to map the game resource location.
  */
 class ResourceLocation {
-    constructor(domain, path) {
-        this.domain = domain;
-        this.path = path;
+    static deconstruct(path, appendPath = "") {
+        const splitPath = path.split(":");
+        const domain = (splitPath.length > 1 && splitPath[0]) ? splitPath[0] : "minecraft";
+        let resourcePath = splitPath.length > 1 ? splitPath[1] : splitPath[0];
+        if (appendPath.length > 0) {
+            if (appendPath.charAt(appendPath.length - 1) != "/") {
+                appendPath = appendPath + "/";
+            }
+            if (!resourcePath.startsWith(appendPath)) {
+                resourcePath = appendPath + resourcePath;
+            }
+        }
+        return new ResourceLocation(domain, resourcePath);
     }
     /**
      * build from texture path
      */
-    static ofTexturePath(path) {
-        const idx = path.indexOf(":");
-        if (idx === -1) {
-            return new ResourceLocation("minecraft", `textures/${path}.png`);
+    static ofTexturePath(location) {
+        if (typeof location == "string") {
+            location = ResourceLocation.deconstruct(location);
         }
-        if (idx === 0) {
-            return new ResourceLocation("minecraft", `textures/${path.substring(1, path.length)}.png`);
-        }
-        return new ResourceLocation(path.substring(0, idx), `textures/${path.substring(idx + 1, path.length)}.png`);
-    }
-    static ofBlockModelPath(path) {
-        const splited = path.split(":");
-        const domain = (splited.length > 1 && splited[0]) ? splited[0] : "minecraft";
-        let blockPath = splited.length > 1 ? splited[1] : splited[0];
-        if (!blockPath.startsWith("block/")) {
-            // 1.12
-            blockPath = `block/${blockPath}`;
-        }
-        return new ResourceLocation(domain, `models/${blockPath}.json`);
+        return new ResourceLocation(location.domain, `textures/${location.path}.png`);
     }
     /**
      * build from model path
      */
-    static ofModelPath(path) {
-        const idx = path.indexOf(":");
-        if (idx === -1) {
-            return new ResourceLocation("minecraft", `models/${path}.json`);
+    static ofBlockModelPath(location) {
+        location = ResourceLocation.deconstruct(location.toString(), "block/");
+        return new ResourceLocation(location.domain, `models/${location.path}.json`);
+    }
+    static ofItemModelPath(location) {
+        location = ResourceLocation.deconstruct(location.toString(), "item/");
+        return new ResourceLocation(location.domain, `models/${location.path}.json`);
+    }
+    static ofModelPath(location) {
+        if (typeof location == "string") {
+            location = ResourceLocation.deconstruct(location);
         }
-        if (idx === 0) {
-            return new ResourceLocation("minecraft", `models/${path.substring(1, path.length)}.json`);
+        return new ResourceLocation(location.domain, `models/${location.path}.json`);
+    }
+    /**
+     * build from block state path
+     */
+    static ofBlockStatePath(location) {
+        if (typeof location == "string") {
+            location = ResourceLocation.deconstruct(location);
         }
-        return new ResourceLocation(path.substring(0, idx), `models/${path.substring(idx + 1, path.length)}.json`);
+        return new ResourceLocation(location.domain, `blockstates/${location.path}.json`);
     }
     /**
      * from absoluted path
      */
-    static fromPath(path) {
-        const idx = path.indexOf(":");
-        if (idx === -1) {
-            return new ResourceLocation("minecraft", path);
-        }
-        if (idx === 0) {
-            return new ResourceLocation("minecraft", path.substring(1, path.length));
-        }
-        return new ResourceLocation(path.substring(0, idx), path.substring(idx + 1, path.length));
+    static fromPath(location) {
+        return ResourceLocation.deconstruct(location.toString());
     }
     static getAssetsPath(location) {
+        if (typeof location == "string") {
+            location = ResourceLocation.deconstruct(location);
+        }
         return `assets/${location.domain}/${location.path}`;
+    }
+    constructor(domain, path) {
+        this.domain = domain;
+        this.path = path;
     }
     toString() { return `${this.domain}:${this.path}`; }
 }
@@ -46378,6 +46388,17 @@ class ResourcePack {
  * The model loader load the resource
  */
 class ModelLoader {
+    static findRealTexturePath(model, variantKey) {
+        let texturePath = model.textures[variantKey];
+        while (texturePath.startsWith("#")) {
+            const next = model.textures[texturePath.substring(1, texturePath.length)];
+            if (!next) {
+                return undefined;
+            }
+            texturePath = next;
+        }
+        return texturePath;
+    }
     /**
      * @param loader The resource loader
      */
@@ -46392,55 +46413,49 @@ class ModelLoader {
          */
         this.models = {};
     }
-    static findRealTexturePath(model, variantKey) {
-        let texturePath = model.textures[variantKey];
-        while (texturePath.startsWith("#")) {
-            const next = model.textures[texturePath.substring(1, texturePath.length)];
-            if (!next) {
-                return undefined;
-            }
-            texturePath = next;
-        }
-        return texturePath;
-    }
     /**
      * Load a model by search its parent. It will throw an error if the model is not found.
      */
-    async loadModel(modelPath) {
-        const res = await this.loader.get(ResourceLocation.ofBlockModelPath(modelPath));
-        if (!res) {
-            throw new Error(`Model ${modelPath} (${ResourceLocation.ofBlockModelPath(modelPath)}) not found`);
+    async loadModel(modelPath, folder = "block") {
+        const path = ResourceLocation.deconstruct(modelPath, folder);
+        const resourceLocation = ResourceLocation.ofModelPath(path);
+        const cacheName = resourceLocation.toString();
+        if (this.models[cacheName] != undefined) {
+            return this.models[cacheName];
         }
-        const raw = JSON.parse(await res.read("utf-8"));
-        if (!raw.textures) {
-            raw.textures = {};
+        const resource = await this.loader.get(resourceLocation);
+        if (!resource) {
+            throw new Error(`Model ${modelPath} (${resourceLocation}) not found`);
         }
-        if (raw.parent) {
-            const parentModel = await this.loadModel(raw.parent);
+        const baseModel = JSON.parse(await resource.read("utf-8"));
+        if (!baseModel.textures) {
+            baseModel.textures = {};
+        }
+        if (baseModel.parent) {
+            const parentModel = await this.loadModel(baseModel.parent, "");
             if (!parentModel) {
-                throw new Error(`Missing parent model ${raw.parent} for ${res.location}`);
+                throw new Error(`Missing parent model ${baseModel.parent} for ${resource.location}`);
             }
-            if (!raw.elements) {
-                raw.elements = parentModel.elements;
+            if (!baseModel.elements) {
+                baseModel.elements = parentModel.elements;
             }
-            if (!raw.ambientocclusion) {
-                raw.ambientocclusion = parentModel.ambientocclusion;
+            if (!baseModel.ambientocclusion) {
+                baseModel.ambientocclusion = parentModel.ambientocclusion;
             }
-            if (!raw.display) {
-                raw.display = parentModel.display;
+            if (!baseModel.display) {
+                baseModel.display = parentModel.display;
             }
-            if (!raw.overrides) {
-                raw.overrides = parentModel.overrides;
+            if (!baseModel.overrides) {
+                baseModel.overrides = parentModel.overrides;
             }
             if (parentModel.textures) {
-                Object.assign(raw.textures, parentModel.textures);
+                Object.assign(baseModel.textures, parentModel.textures);
             }
         }
-        raw.ambientocclusion = raw.ambientocclusion || false;
-        raw.overrides = raw.overrides || [];
-        delete raw.parent;
-        const model = raw;
-        this.models[modelPath] = model;
+        baseModel.ambientocclusion = baseModel.ambientocclusion || false;
+        baseModel.overrides = baseModel.overrides || [];
+        delete baseModel.parent;
+        const model = baseModel;
         const reg = this.textures;
         for (const variant of Object.keys(model.textures)) {
             const texPath = ModelLoader.findRealTexturePath(model, variant);
@@ -46451,6 +46466,7 @@ class ModelLoader {
                 }
             }
         }
+        this.models[cacheName] = model;
         return model;
     }
 }
