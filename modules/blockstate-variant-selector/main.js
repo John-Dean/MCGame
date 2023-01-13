@@ -50,13 +50,22 @@ class VariantSelector {
 		return matches_value;
 	}
 	
-	static parse_multipart_or(criteria, options){
-		for(let key in criteria){
-			let value = criteria[key];
-			if(matches_criteria(key, value, options)){
-				return true;
+	static parse_multipart_or(criteria_list, options){
+		for(let i=0;i<criteria_list.length;i++){
+			let did_match = true;
+			let criteria = criteria_list[i];
+			for(let key in criteria){
+				let value = criteria[key];
+				if(!this.matches_criteria(key, value, options)){
+					did_match = false;
+					break;
+				}
+			}
+			if(did_match){
+				return true;	
 			}
 		}
+		
 		return false;
 	}
 	
@@ -69,6 +78,7 @@ class VariantSelector {
 			
 			let does_apply = true;
 			for(let key in criteria){
+				// console.log(criteria, key)
 				let value = criteria[key];
 				if(key == "OR"){
 					if(!this.parse_multipart_or(value, options)){
