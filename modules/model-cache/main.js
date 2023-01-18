@@ -380,37 +380,12 @@ class ModelCache {
 						}
 						const texture = material.map;
 						
-						if(texture.userData.hasLoaded != undefined){
-							await texture.userData.hasLoaded;
+						if(texture.hasLoaded != undefined){
+							await texture.hasLoaded;
 						}
 						
 						const source = texture.source;
-						let image_data;
-						if(source.data instanceof ImageData){
-							image_data = source.data;
-						}else{
-							let image = source.data;
-							let bitmap = await createImageBitmap(image)
-					
-							let canvas;
-							try{
-								canvas = document.createElement("canvas");
-							} catch(error){
-								try{
-									canvas = new OffscreenCanvas(1, 1);
-								} catch(error){
-									throw "Unable to create canvas"
-								}
-							}
-					
-							let context = canvas.getContext("2d");
-							canvas.width = bitmap.width;
-							canvas.height = bitmap.height;
-							context.clearRect(0, 0, canvas.width, canvas.height);
-							context.drawImage(bitmap, 0, 0);
-					
-							image_data = context.getImageData(0, 0, bitmap.width, bitmap.height);
-						}
+						const image_data = source.data;
 					
 						let transparency = false;
 						for(let i = 0; i < image_data.data.length; i += 4){

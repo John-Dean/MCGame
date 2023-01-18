@@ -18,6 +18,10 @@ class MapLoader {
 		this.chunk_to_models = new ChunkToModels(model_cache);
 	}
 	
+	get materials(){
+		return this.model_cache.materials;
+	}
+	
 	async get_world_data(){
 		return await this.chunk_data.world.get_level_data();
 	}

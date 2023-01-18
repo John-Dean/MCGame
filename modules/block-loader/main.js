@@ -1,12 +1,15 @@
 import { BlockModelFactory, ResourcePack, ResourceManager, ResourceLocation, ModelLoader } from "/packaged/node-modules.js"
 import { load_filesystem } from "../load-file/main.js";
+import {ResourceTextureManager} from "../texture-manager/main.js";
 
 class BlockLoader {
 	constructor(){
 		this.resource_manager = new ResourceManager();
 		this.model_loader = new ModelLoader(this.resource_manager);
 		
-		this.block_model_factory = new BlockModelFactory(this.model_loader.textures);
+		this.texture_manager = new ResourceTextureManager(this.model_loader.textures);
+		
+		this.block_model_factory = new BlockModelFactory(this.texture_manager);
 	}
 	
 	get models(){

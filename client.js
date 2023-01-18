@@ -28,6 +28,9 @@ for(let x = range.x_low; x <= range.x_high; x++){
 		scene.add(chunk_models)
 	}
 }
+
+console.log(map_loader.materials)
+
 /*
 {
 	{
